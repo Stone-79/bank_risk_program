@@ -137,6 +137,18 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _non_negative(value: Any, default: float = 0.0) -> float:
+    return max(_safe_float(value, default), 0.0)
+
+
+def _positive_int(value: Any, default: int = 1) -> int:
+    return max(int(_safe_float(value, default)), 1)
+
+
+def _percentage(value: Any, default: float = 0.0) -> float:
+    return min(max(_safe_float(value, default), 0.0), 100.0)
+
+
 def _grade_from_probability(probability: float) -> str:
     if probability >= 0.80:
         return "E"
@@ -182,11 +194,11 @@ def _apply_business_rules(base_probability: float, form_data: dict[str, Any]) ->
     elif overdue_count > 0:
         adjustment += 0.05
 
-    monthly_income = _safe_float(form_data.get("monthlyIncome"))
-    monthly_expense = _safe_float(form_data.get("monthlyExpense"))
-    existing_repayment = _safe_float(form_data.get("existingMonthlyRepayment"))
-    requested_amount = _safe_float(form_data.get("requestedAmount"))
-    loan_term = max(_safe_float(form_data.get("loanTerm"), 12), 1)
+    monthly_income = _non_negative(form_data.get("monthlyIncome"))
+    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
+    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
+    requested_amount = _non_negative(form_data.get("requestedAmount"))
+    loan_term = _positive_int(form_data.get("loanTerm"), 12)
     disposable_income = monthly_income - monthly_expense - existing_repayment
     debt_income_ratio = existing_repayment / monthly_income if monthly_income > 0 else 0
     expense_income_ratio = monthly_expense / monthly_income if monthly_income > 0 else 0
@@ -207,7 +219,7 @@ def _apply_business_rules(base_probability: float, form_data: dict[str, Any]) ->
     elif expense_income_ratio > 0.65:
         adjustment += 0.04
 
-    credit_card_usage = _safe_float(form_data.get("creditCardUsage"))
+    credit_card_usage = _percentage(form_data.get("creditCardUsage"))
     if credit_card_usage > 80:
         adjustment += 0.10
     elif credit_card_usage > 50:
@@ -231,11 +243,11 @@ def _apply_business_rules(base_probability: float, form_data: dict[str, Any]) ->
 
 
 def _loan_amount_advice(form_data: dict[str, Any], coefficient: float) -> dict[str, Any]:
-    monthly_income = _safe_float(form_data.get("monthlyIncome"))
-    monthly_expense = _safe_float(form_data.get("monthlyExpense"))
-    existing_repayment = _safe_float(form_data.get("existingMonthlyRepayment"))
-    loan_term = max(_safe_float(form_data.get("loanTerm"), 12), 0)
-    requested_amount = _safe_float(form_data.get("requestedAmount"))
+    monthly_income = _non_negative(form_data.get("monthlyIncome"))
+    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
+    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
+    loan_term = _positive_int(form_data.get("loanTerm"), 12)
+    requested_amount = _non_negative(form_data.get("requestedAmount"))
 
     disposable_income = monthly_income - monthly_expense - existing_repayment
     base_amount = max(disposable_income, 0) * loan_term
@@ -262,12 +274,12 @@ def _loan_amount_advice(form_data: dict[str, Any], coefficient: float) -> dict[s
 
 def _credit_improvement_advice(form_data: dict[str, Any], grade: str) -> list[str]:
     suggestions: list[str] = []
-    overdue_count = _safe_float(form_data.get("overdueCount"))
-    credit_card_usage = _safe_float(form_data.get("creditCardUsage"))
-    monthly_income = _safe_float(form_data.get("monthlyIncome"))
-    monthly_expense = _safe_float(form_data.get("monthlyExpense"))
-    existing_repayment = _safe_float(form_data.get("existingMonthlyRepayment"))
-    credit_history_years = _safe_float(form_data.get("creditHistoryYears"))
+    overdue_count = _non_negative(form_data.get("overdueCount"))
+    credit_card_usage = _percentage(form_data.get("creditCardUsage"))
+    monthly_income = _non_negative(form_data.get("monthlyIncome"))
+    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
+    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
+    credit_history_years = _non_negative(form_data.get("creditHistoryYears"))
     debt_income_ratio = existing_repayment / monthly_income if monthly_income > 0 else 0
     expense_income_ratio = monthly_expense / monthly_income if monthly_income > 0 else 0
 
