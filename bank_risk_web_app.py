@@ -1,11 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import argparse
-import json
+import argparse, hashlib, hmac, html, json, secrets, sqlite3
+from datetime import datetime
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -16,12 +17,34 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "源代码" / "data" / "bankriskinfo.csv"
+DB_PATH = BASE_DIR / "bank_risk_users.db"
+SESSION_COOKIE = "bank_risk_session"
+SESSIONS: dict[str, int] = {}
+
+PROFILE_DEFAULTS = {
+    "age": "35", "employmentYears": "5", "creditHistoryYears": "3",
+    "idVerify": "一致", "threeVerify": "一致", "inCourt": "0", "isBlackList": "0",
+}
+ASSESSMENT_DEFAULTS = {
+    "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男",
+    "netLength": "24个月以上", "card_age": "5", "transTotalAmt": "5000",
+    "transTotalCnt": "20", "onlineTransAmt": "1200", "cashTotalAmt": "0", "isDue": "0",
+    "monthlyIncome": "10000", "monthlyExpense": "4500", "existingMonthlyRepayment": "1500",
+    "requestedAmount": "50000", "loanTerm": "12", "overdueCount": "0", "creditCardUsage": "35",
+}
+
+RISK_POLICIES = {
+    "A": ("A级，低风险", "可直接通过", 1.2, "自动初审 → 资料确认 → 放款", "预计 1-2 个工作日"),
+    "B": ("B级，较低风险", "可放贷", 1.0, "自动初审 → 基础人工复核 → 放款", "预计 2-3 个工作日"),
+    "C": ("C级，中等风险", "人工审核", 0.7, "系统初审 → 人工复核 → 补充资料 → 额度调整 → 放款", "预计 3-5 个工作日"),
+    "D": ("D级，较高风险", "降低额度或提高利率", 0.4, "系统初审 → 严格人工审核 → 补充收入或资产证明 → 降低额度后重新评估", "预计 5-7 个工作日"),
+    "E": ("E级，高风险", "建议拒贷", 0.0, "系统初审 → 高风险提示 → 暂不建议申请贷款", "建议先提高信用状况后再申请"),
+}
 
 
-def _make_one_hot_encoder() -> OneHotEncoder:
+def _onehot() -> OneHotEncoder:
     try:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
@@ -29,728 +52,402 @@ def _make_one_hot_encoder() -> OneHotEncoder:
 
 
 def load_data() -> pd.DataFrame:
-    data = pd.read_csv(DATA_PATH, encoding="utf-8").rename(columns={"Default1": "Default"})
-    return data.dropna(subset=["Default"]).copy()
+    return pd.read_csv(DATA_PATH, encoding="utf-8").rename(columns={"Default1": "Default"}).dropna(subset=["Default"]).copy()
 
 
 def train_model() -> tuple[Pipeline, dict[str, Any], list[str], float]:
-    data = load_data()
-    y = data["Default"].astype(int)
-    x = data.drop(columns=["Default"])
-
-    numeric_cols = x.select_dtypes(include=["number"]).columns.tolist()
-    category_cols = [column for column in x.columns if column not in numeric_cols]
-
-    defaults: dict[str, Any] = {}
-    for column in numeric_cols:
-        defaults[column] = float(x[column].median())
-    for column in category_cols:
-        mode = x[column].mode(dropna=True)
-        defaults[column] = str(mode.iloc[0]) if not mode.empty else "未知"
-
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", SimpleImputer(strategy="median"), numeric_cols),
-            (
-                "cat",
-                Pipeline(
-                    steps=[
-                        ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("onehot", _make_one_hot_encoder()),
-                    ]
-                ),
-                category_cols,
-            ),
-        ]
-    )
-    model = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            (
-                "classifier",
-                LogisticRegression(
-                    class_weight="balanced",
-                    solver="liblinear",
-                    max_iter=1000,
-                    random_state=33,
-                ),
-            ),
-        ]
-    )
-
-    x_train, x_test, y_train, y_test = train_test_split(
-        x, y, test_size=0.2, random_state=33, stratify=y
-    )
+    data = load_data(); y = data["Default"].astype(int); x = data.drop(columns=["Default"])
+    num_cols = x.select_dtypes(include=["number"]).columns.tolist()
+    cat_cols = [c for c in x.columns if c not in num_cols]
+    defaults: dict[str, Any] = {c: float(x[c].median()) for c in num_cols}
+    for c in cat_cols:
+        mode = x[c].mode(dropna=True); defaults[c] = str(mode.iloc[0]) if not mode.empty else "未知"
+    pre = ColumnTransformer([
+        ("num", SimpleImputer(strategy="median"), num_cols),
+        ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", _onehot())]), cat_cols),
+    ])
+    model = Pipeline([("preprocessor", pre), ("classifier", LogisticRegression(class_weight="balanced", solver="liblinear", max_iter=1000, random_state=33))])
+    x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=33, stratify=y)
     model.fit(x_train, y_train)
-    auc = roc_auc_score(y_test, model.predict_proba(x_test)[:, 1])
-    return model, defaults, x.columns.tolist(), float(auc)
+    return model, defaults, x.columns.tolist(), float(roc_auc_score(y_test, model.predict_proba(x_test)[:, 1]))
 
 
 MODEL, DEFAULTS, FEATURE_COLUMNS, MODEL_AUC = train_model()
 
 
-RISK_POLICIES = {
-    "A": {
-        "level": "A级，低风险",
-        "suggestion": "可直接通过",
-        "coefficient": 1.2,
-        "process": "自动初审 → 资料确认 → 放款",
-        "time": "预计 1-2 个工作日",
-    },
-    "B": {
-        "level": "B级，较低风险",
-        "suggestion": "可放贷",
-        "coefficient": 1.0,
-        "process": "自动初审 → 基础人工复核 → 放款",
-        "time": "预计 2-3 个工作日",
-    },
-    "C": {
-        "level": "C级，中等风险",
-        "suggestion": "人工审核",
-        "coefficient": 0.7,
-        "process": "系统初审 → 人工复核 → 补充资料 → 额度调整 → 放款",
-        "time": "预计 3-5 个工作日",
-    },
-    "D": {
-        "level": "D级，较高风险",
-        "suggestion": "降低额度或提高利率",
-        "coefficient": 0.4,
-        "process": "系统初审 → 严格人工审核 → 补充收入或资产证明 → 降低额度后重新评估",
-        "time": "预计 5-7 个工作日",
-    },
-    "E": {
-        "level": "E级，高风险",
-        "suggestion": "建议拒贷",
-        "coefficient": 0.0,
-        "process": "系统初审 → 高风险提示 → 暂不建议申请贷款",
-        "time": "建议先提高信用状况后再申请",
-    },
-}
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def fnum(v: Any, default: float = 0.0) -> float:
     try:
-        if value in ("", None):
-            return default
-        return float(value)
+        return default if v in ("", None) else float(v)
     except (TypeError, ValueError):
         return default
 
 
-def _non_negative(value: Any, default: float = 0.0) -> float:
-    return max(_safe_float(value, default), 0.0)
+def nonneg(v: Any, default: float = 0.0) -> float: return max(fnum(v, default), 0.0)
+def posint(v: Any, default: int = 1) -> int: return max(int(fnum(v, default)), 1)
+def pct(v: Any, default: float = 0.0) -> float: return min(max(fnum(v, default), 0.0), 100.0)
+def clamp(p: float) -> float: return min(max(p, 0.01), 0.99)
 
 
-def _positive_int(value: Any, default: int = 1) -> int:
-    return max(int(_safe_float(value, default)), 1)
+def grade_from_probability(p: float) -> str:
+    return "E" if p >= 0.80 else "D" if p >= 0.60 else "C" if p >= 0.40 else "B" if p >= 0.20 else "A"
 
 
-def _percentage(value: Any, default: float = 0.0) -> float:
-    return min(max(_safe_float(value, default), 0.0), 100.0)
+def normalize_form(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    for key in ["age", "employmentYears", "creditHistoryYears", "monthlyIncome", "monthlyExpense", "existingMonthlyRepayment", "requestedAmount", "overdueCount", "card_age", "transTotalAmt", "transTotalCnt", "onlineTransAmt", "cashTotalAmt"]:
+        if key in out: out[key] = str(nonneg(out.get(key)))
+    if "loanTerm" in out: out["loanTerm"] = str(posint(out.get("loanTerm"), 12))
+    if "creditCardUsage" in out: out["creditCardUsage"] = str(pct(out.get("creditCardUsage")))
+    return out
 
 
-def _grade_from_probability(probability: float) -> str:
-    if probability >= 0.80:
-        return "E"
-    if probability >= 0.60:
-        return "D"
-    if probability >= 0.40:
-        return "C"
-    if probability >= 0.20:
-        return "B"
-    return "A"
+def apply_business_rules(base: float, d: dict[str, Any]) -> tuple[float, float]:
+    adj = 0.0
+    idv, three = str(d.get("idVerify", "")).strip(), str(d.get("threeVerify", "")).strip()
+    if idv == "不一致": adj += 0.12
+    elif idv == "未知": adj += 0.06
+    if three == "不一致": adj += 0.10
+    elif three == "未知": adj += 0.05
+    if fnum(d.get("inCourt")) > 0: adj += 0.12
+    if fnum(d.get("isBlackList")) > 0: adj += 0.20
+    if fnum(d.get("isDue")) > 0: adj += 0.12
+    od = nonneg(d.get("overdueCount"))
+    if od >= 5: adj += 0.15
+    elif od >= 3: adj += 0.10
+    elif od > 0: adj += 0.05
+    income, expense, debt = nonneg(d.get("monthlyIncome")), nonneg(d.get("monthlyExpense")), nonneg(d.get("existingMonthlyRepayment"))
+    requested, term = nonneg(d.get("requestedAmount")), posint(d.get("loanTerm"), 12)
+    disposable = income - expense - debt
+    debt_ratio = debt / income if income > 0 else 0
+    expense_ratio = expense / income if income > 0 else 0
+    if income <= 0: adj += 0.12
+    if disposable <= 0: adj += 0.15
+    elif requested / term > disposable: adj += 0.10
+    if debt_ratio > 0.6: adj += 0.12
+    elif debt_ratio > 0.4: adj += 0.08
+    if expense_ratio > 0.8: adj += 0.08
+    elif expense_ratio > 0.65: adj += 0.04
+    usage = pct(d.get("creditCardUsage"))
+    if usage > 80: adj += 0.10
+    elif usage > 50: adj += 0.06
+    history = fnum(d.get("creditHistoryYears"))
+    if history < 1: adj += 0.08
+    elif history < 2: adj += 0.04
+    elif history >= 5: adj -= 0.03
+    work = fnum(d.get("employmentYears"))
+    if work < 1: adj += 0.03
+    elif work >= 5: adj -= 0.02
+    if idv == "一致" and three == "一致" and od == 0: adj -= 0.03
+    if income > 0 and debt_ratio < 0.25 and disposable > 0: adj -= 0.03
+    return clamp(base + adj), adj
 
-
-def _clamp_probability(probability: float) -> float:
-    return min(max(probability, 0.01), 0.99)
-
-
-def _apply_business_rules(base_probability: float, form_data: dict[str, Any]) -> tuple[float, float]:
-    adjustment = 0.0
-
-    id_verify = str(form_data.get("idVerify", "")).strip()
-    three_verify = str(form_data.get("threeVerify", "")).strip()
-    if id_verify == "不一致":
-        adjustment += 0.12
-    elif id_verify == "未知":
-        adjustment += 0.06
-    if three_verify == "不一致":
-        adjustment += 0.10
-    elif three_verify == "未知":
-        adjustment += 0.05
-
-    if _safe_float(form_data.get("inCourt")) > 0:
-        adjustment += 0.12
-    if _safe_float(form_data.get("isBlackList")) > 0:
-        adjustment += 0.20
-    if _safe_float(form_data.get("isDue")) > 0:
-        adjustment += 0.12
-
-    overdue_count = _safe_float(form_data.get("overdueCount"))
-    if overdue_count >= 5:
-        adjustment += 0.15
-    elif overdue_count >= 3:
-        adjustment += 0.10
-    elif overdue_count > 0:
-        adjustment += 0.05
-
-    monthly_income = _non_negative(form_data.get("monthlyIncome"))
-    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
-    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
-    requested_amount = _non_negative(form_data.get("requestedAmount"))
-    loan_term = _positive_int(form_data.get("loanTerm"), 12)
-    disposable_income = monthly_income - monthly_expense - existing_repayment
-    debt_income_ratio = existing_repayment / monthly_income if monthly_income > 0 else 0
-    expense_income_ratio = monthly_expense / monthly_income if monthly_income > 0 else 0
-    requested_monthly_payment = requested_amount / loan_term if loan_term > 0 else requested_amount
-
-    if monthly_income <= 0:
-        adjustment += 0.12
-    if disposable_income <= 0:
-        adjustment += 0.15
-    elif requested_monthly_payment > disposable_income:
-        adjustment += 0.10
-    if debt_income_ratio > 0.6:
-        adjustment += 0.12
-    elif debt_income_ratio > 0.4:
-        adjustment += 0.08
-    if expense_income_ratio > 0.8:
-        adjustment += 0.08
-    elif expense_income_ratio > 0.65:
-        adjustment += 0.04
-
-    credit_card_usage = _percentage(form_data.get("creditCardUsage"))
-    if credit_card_usage > 80:
-        adjustment += 0.10
-    elif credit_card_usage > 50:
-        adjustment += 0.06
-
-    credit_history_years = _safe_float(form_data.get("creditHistoryYears"))
-    if credit_history_years < 1:
-        adjustment += 0.08
-    elif credit_history_years < 2:
-        adjustment += 0.04
-    elif credit_history_years >= 5:
-        adjustment -= 0.03
-
-    if id_verify == "一致" and three_verify == "一致" and overdue_count == 0:
-        adjustment -= 0.03
-    if monthly_income > 0 and debt_income_ratio < 0.25 and disposable_income > 0:
-        adjustment -= 0.03
-
-    final_probability = _clamp_probability(base_probability + adjustment)
-    return final_probability, adjustment
-
-
-def _loan_amount_advice(form_data: dict[str, Any], coefficient: float) -> dict[str, Any]:
-    monthly_income = _non_negative(form_data.get("monthlyIncome"))
-    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
-    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
-    loan_term = _positive_int(form_data.get("loanTerm"), 12)
-    requested_amount = _non_negative(form_data.get("requestedAmount"))
-
-    disposable_income = monthly_income - monthly_expense - existing_repayment
-    base_amount = max(disposable_income, 0) * loan_term
-    recommended_amount = base_amount * coefficient
-    amount_comment = (
-        "当前申请金额较合理"
-        if requested_amount <= recommended_amount
-        else "申请金额可能偏高，建议降低申请额度"
-    )
-
+def loan_amount_advice(d: dict[str, Any], coef: float) -> dict[str, Any]:
+    income, expense, debt = nonneg(d.get("monthlyIncome")), nonneg(d.get("monthlyExpense")), nonneg(d.get("existingMonthlyRepayment"))
+    term, requested = posint(d.get("loanTerm"), 12), nonneg(d.get("requestedAmount"))
+    disposable = income - expense - debt
+    base_amount = max(disposable, 0) * term
+    recommended = base_amount * coef
     return {
-        "monthly_income": round(monthly_income, 2),
-        "monthly_expense": round(monthly_expense, 2),
-        "existing_monthly_repayment": round(existing_repayment, 2),
-        "loan_term": int(loan_term),
-        "requested_amount": round(requested_amount, 2),
-        "disposable_income": round(disposable_income, 2),
-        "base_amount": round(base_amount, 2),
-        "risk_coefficient": coefficient,
-        "recommended_amount": round(recommended_amount, 2),
-        "amount_comment": amount_comment,
+        "monthly_income": round(income, 2), "monthly_expense": round(expense, 2),
+        "existing_monthly_repayment": round(debt, 2), "loan_term": term,
+        "requested_amount": round(requested, 2), "disposable_income": round(disposable, 2),
+        "base_amount": round(base_amount, 2), "risk_coefficient": coef,
+        "recommended_amount": round(recommended, 2),
+        "amount_comment": "当前申请金额较合理" if requested <= recommended else "申请金额可能偏高，建议降低申请额度",
     }
 
 
-def _credit_improvement_advice(form_data: dict[str, Any], grade: str) -> list[str]:
-    suggestions: list[str] = []
-    overdue_count = _non_negative(form_data.get("overdueCount"))
-    credit_card_usage = _percentage(form_data.get("creditCardUsage"))
-    monthly_income = _non_negative(form_data.get("monthlyIncome"))
-    monthly_expense = _non_negative(form_data.get("monthlyExpense"))
-    existing_repayment = _non_negative(form_data.get("existingMonthlyRepayment"))
-    credit_history_years = _non_negative(form_data.get("creditHistoryYears"))
-    debt_income_ratio = existing_repayment / monthly_income if monthly_income > 0 else 0
-    expense_income_ratio = monthly_expense / monthly_income if monthly_income > 0 else 0
-
-    if overdue_count >= 3:
-        suggestions.append("历史逾期次数较多，建议保持按时还款，减少逾期记录。")
-    elif overdue_count > 0:
-        suggestions.append("存在少量逾期记录，建议后续保持连续按时还款。")
-    if credit_card_usage > 50:
-        suggestions.append("信用卡使用率较高，建议降低信用卡额度使用比例，控制在 50% 以下。")
-    if debt_income_ratio > 0.4:
-        suggestions.append("负债收入比较高，建议先减少已有负债，提高可支配收入。")
-    if credit_history_years < 2:
-        suggestions.append("信用历史较短，建议保持稳定信用记录，延长信用积累时间。")
-    if expense_income_ratio > 0.7:
-        suggestions.append("月支出占收入比例较高，建议优化消费结构，提高还款能力。")
-    if grade in {"D", "E"}:
-        suggestions.append("当前风险等级偏高，建议暂缓大额贷款申请，先改善信用状况。")
-    if not suggestions:
-        suggestions.append("当前信用状况较稳定，建议继续保持良好还款习惯和合理负债水平。")
-
-    return suggestions
+def improvement_advice(d: dict[str, Any], grade: str) -> list[str]:
+    tips: list[str] = []
+    od, usage = nonneg(d.get("overdueCount")), pct(d.get("creditCardUsage"))
+    income, expense, debt = nonneg(d.get("monthlyIncome")), nonneg(d.get("monthlyExpense")), nonneg(d.get("existingMonthlyRepayment"))
+    debt_ratio = debt / income if income > 0 else 0
+    expense_ratio = expense / income if income > 0 else 0
+    if od >= 3: tips.append("历史逾期次数较多，建议保持按时还款，减少逾期记录。")
+    elif od > 0: tips.append("存在少量逾期记录，建议后续保持连续按时还款。")
+    if usage > 50: tips.append("信用卡使用率较高，建议降低信用卡额度使用比例，控制在 50% 以下。")
+    if debt_ratio > 0.4: tips.append("负债收入比较高，建议先减少已有负债，提高可支配收入。")
+    if nonneg(d.get("creditHistoryYears")) < 2: tips.append("信用历史较短，建议保持稳定信用记录，延长信用积累时间。")
+    if expense_ratio > 0.7: tips.append("月支出占收入比例较高，建议优化消费结构，提高还款能力。")
+    if grade in {"D", "E"}: tips.append("当前风险等级偏高，建议暂缓大额贷款申请，先改善信用状况。")
+    return tips or ["当前信用状况较稳定，建议继续保持良好还款习惯和合理负债水平。"]
 
 
 def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
+    form_data = normalize_form(form_data)
     row = DEFAULTS.copy()
-    for key, value in form_data.items():
-        if key not in row or value in ("", None):
-            continue
-        if isinstance(DEFAULTS[key], float):
-            row[key] = float(value)
-        else:
-            row[key] = str(value)
-
-    sample = pd.DataFrame([row], columns=FEATURE_COLUMNS)
-    base_probability = float(MODEL.predict_proba(sample)[0, 1])
-    probability, business_adjustment = _apply_business_rules(base_probability, form_data)
-    credit_score = 100 - probability * 100
-    grade = _grade_from_probability(probability)
-    policy = RISK_POLICIES[grade]
-    amount_advice = _loan_amount_advice(form_data, policy["coefficient"])
-    improvement_advice = _credit_improvement_advice(form_data, grade)
-
+    for k, v in form_data.items():
+        if k in row and v not in ("", None): row[k] = float(v) if isinstance(DEFAULTS[k], float) else str(v)
+    base = float(MODEL.predict_proba(pd.DataFrame([row], columns=FEATURE_COLUMNS))[0, 1])
+    prob, adj = apply_business_rules(base, form_data)
+    grade = grade_from_probability(prob)
+    level, suggestion, coef, process, expected_time = RISK_POLICIES[grade]
+    amount = loan_amount_advice(form_data, coef)
     return {
-        "probability": round(probability, 4),
-        "base_probability": round(base_probability, 4),
-        "business_adjustment": round(business_adjustment, 4),
-        "percentage": f"{probability * 100:.2f}%",
-        "credit_score": round(credit_score, 2),
-        "level": policy["level"],
-        "suggestion": policy["suggestion"],
-        "loan_amount": amount_advice,
-        "improvement_advice": improvement_advice,
-        "loan_process": policy["process"],
-        "expected_time": policy["time"],
-        "auc": round(MODEL_AUC, 4),
+        "probability": round(prob, 4), "base_probability": round(base, 4), "business_adjustment": round(adj, 4),
+        "percentage": f"{prob * 100:.2f}%", "credit_score": round(100 - prob * 100, 2),
+        "risk_grade": grade, "level": level, "suggestion": suggestion, "loan_amount": amount,
+        "improvement_advice": improvement_advice(form_data, grade), "loan_process": process,
+        "expected_time": expected_time, "auc": round(MODEL_AUC, 4), "normalized_input": form_data,
     }
 
 
-HTML = """<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>银行客户信用风险评估</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Microsoft YaHei", Arial, sans-serif;
-      color: #17212b;
-      background: #f4f6f8;
-    }
-    header {
-      padding: 22px 32px;
-      background: #12324a;
-      color: white;
-      border-bottom: 4px solid #2c7a7b;
-    }
-    header h1 { margin: 0 0 6px; font-size: 24px; }
-    header p { margin: 0; color: #cfe3ef; }
-    main {
-      display: grid;
-      grid-template-columns: minmax(360px, 1.35fr) minmax(300px, .85fr);
-      gap: 20px;
-      padding: 22px 32px;
-    }
-    section {
-      background: white;
-      border: 1px solid #dde3ea;
-      border-radius: 8px;
-      padding: 18px;
-    }
-    h2 { margin: 0 0 14px; font-size: 18px; }
-    form {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    label { display: grid; gap: 6px; font-size: 13px; color: #435160; }
-    input, select {
-      width: 100%;
-      height: 36px;
-      border: 1px solid #c9d2dc;
-      border-radius: 6px;
-      padding: 0 10px;
-      background: #fff;
-      color: #17212b;
-    }
-    button {
-      height: 40px;
-      border: 0;
-      border-radius: 6px;
-      background: #216869;
-      color: white;
-      font-weight: 700;
-      cursor: pointer;
-    }
-    button:hover { background: #174f50; }
-    .actions { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; }
-    .result {
-      min-height: 190px;
-      display: grid;
-      align-content: start;
-      gap: 12px;
-    }
-    .score { font-size: 38px; font-weight: 800; color: #12324a; }
-    .score-row {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .score-card {
-      border: 1px solid #e3e8ee;
-      border-radius: 8px;
-      padding: 12px;
-      background: #fafbfc;
-    }
-    .score-card span {
-      display: block;
-      color: #66727f;
-      font-size: 13px;
-      margin-bottom: 4px;
-    }
-    .level {
-      display: inline-block;
-      width: fit-content;
-      padding: 7px 12px;
-      border-radius: 999px;
-      background: #e7f3f2;
-      color: #185b5d;
-      font-weight: 700;
-    }
-    .note { color: #66727f; line-height: 1.7; }
-    .metrics {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 14px;
-    }
-    .metric {
-      border: 1px solid #e3e8ee;
-      border-radius: 6px;
-      padding: 12px;
-      background: #fafbfc;
-    }
-    .metric strong { display: block; font-size: 20px; margin-top: 4px; }
-    .detail-block {
-      border-top: 1px solid #edf1f5;
-      padding-top: 12px;
-    }
-    .detail-block h3 {
-      margin: 0 0 8px;
-      font-size: 15px;
-    }
-    .detail-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-      font-size: 14px;
-    }
-    .detail-item {
-      padding: 9px;
-      border-radius: 6px;
-      background: #f7f9fb;
-      border: 1px solid #e4eaf0;
-    }
-    .advice-list {
-      margin: 0;
-      padding-left: 18px;
-      display: grid;
-      gap: 6px;
-      line-height: 1.6;
-      color: #435160;
-    }
-    @media (max-width: 900px) {
-      main { grid-template-columns: 1fr; padding: 16px; }
-      form { grid-template-columns: 1fr; }
-      header { padding: 18px 16px; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>银行客户信用风险评估</h1>
-    <p>填写贷款申请人的基础信息，系统预测违约风险概率和审批建议。</p>
-  </header>
-  <main>
-    <section>
-      <h2>申请人信息</h2>
-      <form id="riskForm">
-        <label>年龄
-          <input name="age" type="number" value="35" min="18" max="80" />
-        </label>
-        <label>城市级别
-          <select name="CityId">
-            <option>一线城市</option>
-            <option>二线城市</option>
-            <option>其它</option>
-          </select>
-        </label>
-        <label>学历
-          <select name="education">
-            <option>小学</option>
-            <option>初中</option>
-            <option>高中</option>
-            <option>本科以上</option>
-          </select>
-        </label>
-        <label>婚姻状况
-          <select name="maritalStatus">
-            <option>已婚</option>
-            <option>未婚</option>
-            <option>未知</option>
-          </select>
-        </label>
-        <label>性别
-          <select name="sex">
-            <option>男</option>
-            <option>女</option>
-          </select>
-        </label>
-        <label>在网时长
-          <select name="netLength">
-            <option>0-6个月</option>
-            <option>6-12个月</option>
-            <option>12-24个月</option>
-            <option>24个月以上</option>
-            <option>无效</option>
-          </select>
-        </label>
-        <label>身份验证
-          <select name="idVerify">
-            <option>一致</option>
-            <option>不一致</option>
-            <option>未知</option>
-          </select>
-        </label>
-        <label>三要素验证
-          <select name="threeVerify">
-            <option>一致</option>
-            <option>不一致</option>
-            <option>未知</option>
-          </select>
-        </label>
-        <label>银行卡开卡年限
-          <input name="card_age" type="number" value="5" min="0" />
-        </label>
-        <label>总消费金额
-          <input name="transTotalAmt" type="number" value="5000" min="0" />
-        </label>
-        <label>总消费笔数
-          <input name="transTotalCnt" type="number" value="20" min="0" />
-        </label>
-        <label>网上消费金额
-          <input name="onlineTransAmt" type="number" value="1200" />
-        </label>
-        <label>取现金额
-          <input name="cashTotalAmt" type="number" value="0" min="0" />
-        </label>
-        <label>是否法院记录
-          <select name="inCourt">
-            <option value="0">否</option>
-            <option value="1">是</option>
-          </select>
-        </label>
-        <label>是否黑名单
-          <select name="isBlackList">
-            <option value="0">否</option>
-            <option value="1">是</option>
-          </select>
-        </label>
-        <label>是否逾期
-          <select name="isDue">
-            <option value="0">否</option>
-            <option value="1">是</option>
-          </select>
-        </label>
-        <label>月收入
-          <input name="monthlyIncome" type="number" value="10000" min="0" />
-        </label>
-        <label>月支出
-          <input name="monthlyExpense" type="number" value="4500" min="0" />
-        </label>
-        <label>已有月还款金额
-          <input name="existingMonthlyRepayment" type="number" value="1500" min="0" />
-        </label>
-        <label>申请贷款金额
-          <input name="requestedAmount" type="number" value="50000" min="0" />
-        </label>
-        <label>贷款期限（月）
-          <input name="loanTerm" type="number" value="12" min="1" />
-        </label>
-        <label>历史逾期次数
-          <input name="overdueCount" type="number" value="0" min="0" />
-        </label>
-        <label>信用卡使用率（%）
-          <input name="creditCardUsage" type="number" value="35" min="0" max="100" />
-        </label>
-        <label>信用历史年限
-          <input name="creditHistoryYears" type="number" value="3" min="0" step="0.5" />
-        </label>
-        <div class="actions">
-          <button type="submit">评估违约风险</button>
-          <span class="note">模型输出用于辅助风控判断，不等同于最终贷款审批。</span>
-        </div>
-      </form>
-    </section>
-    <section>
-      <h2>评估结果</h2>
-      <div class="result" id="result">
-        <div class="note">提交申请人信息后，这里会显示预测结果。</div>
-      </div>
-      <div class="metrics">
-        <div class="metric">模型测试 AUC<strong id="auc">-</strong></div>
-        <div class="metric">模型类型<strong>逻辑回归</strong></div>
-      </div>
-    </section>
-  </main>
-  <script>
-    const form = document.getElementById("riskForm");
-    const result = document.getElementById("result");
-    const auc = document.getElementById("auc");
-    const money = (value) => Number(value).toLocaleString("zh-CN", {
-      style: "currency",
-      currency: "CNY",
-      maximumFractionDigits: 0,
-    });
+def conn() -> sqlite3.Connection:
+    c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row; return c
 
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const payload = Object.fromEntries(new FormData(form).entries());
-      result.innerHTML = '<div class="note">正在评估...</div>';
-      const response = await fetch("/predict", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      auc.textContent = data.auc;
-      const amount = data.loan_amount;
-      const adviceItems = data.improvement_advice
-        .map((item) => `<li>${item}</li>`)
-        .join("");
-      result.innerHTML = `
-        <div class="score-row">
-          <div class="score-card">
-            <span>违约风险概率</span>
-            <div class="score">${data.percentage}</div>
-          </div>
-          <div class="score-card">
-            <span>信用评分</span>
-            <div class="score">${data.credit_score}</div>
-          </div>
-        </div>
-        <div class="level">${data.level}</div>
-        <div><strong>审批建议：</strong>${data.suggestion}</div>
-        <div class="detail-block">
-          <h3>建议可贷款额度</h3>
-          <div class="detail-grid">
-            <div class="detail-item">可支配月收入<br><strong>${money(amount.disposable_income)}</strong></div>
-            <div class="detail-item">推荐可贷款额度<br><strong>${money(amount.recommended_amount)}</strong></div>
-            <div class="detail-item">申请金额<br><strong>${money(amount.requested_amount)}</strong></div>
-            <div class="detail-item">金额判断<br><strong>${amount.amount_comment}</strong></div>
-          </div>
-        </div>
-        <div class="detail-block">
-          <h3>信用提升建议</h3>
-          <ul class="advice-list">${adviceItems}</ul>
-        </div>
-        <div class="detail-block">
-          <h3>预计贷款流程和到账时间</h3>
-          <div class="note">${data.loan_process}</div>
-          <div><strong>${data.expected_time}</strong></div>
-        </div>
-      `;
-    });
-  </script>
-</body>
-</html>
-"""
 
+def init_db() -> None:
+    with conn() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_time TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            age REAL,
+            employment_years REAL,
+            credit_history_years REAL,
+            identity_verified TEXT,
+            three_factor_verified TEXT,
+            court_record INTEGER,
+            blacklist INTEGER,
+            updated_time TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS assessment_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            monthly_income REAL,
+            monthly_expense REAL,
+            existing_monthly_debt REAL,
+            requested_loan_amount REAL,
+            loan_term INTEGER,
+            default_probability REAL,
+            credit_score REAL,
+            risk_level TEXT,
+            recommended_loan_amount REAL,
+            created_time TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """)
+
+
+def hash_password(password: str, salt_hex: str | None = None) -> str:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try: alg, salt, _ = stored.split("$", 2)
+    except ValueError: return False
+    return alg == "pbkdf2_sha256" and hmac.compare_digest(hash_password(password, salt), stored)
+
+
+def create_user(username: str, password: str) -> tuple[bool, str]:
+    username = username.strip()
+    if len(username) < 3: return False, "用户名至少需要 3 个字符。"
+    if len(password) < 6: return False, "密码至少需要 6 个字符。"
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        with conn() as c:
+            cur = c.execute("INSERT INTO users(username,password_hash,created_time) VALUES (?,?,?)", (username, hash_password(password), now))
+            c.execute("INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,identity_verified,three_factor_verified,court_record,blacklist,updated_time) VALUES (?,?,?,?,?,?,?,?,?)", (cur.lastrowid, 35, 5, 3, "一致", "一致", 0, 0, now))
+        return True, "注册成功，请登录。"
+    except sqlite3.IntegrityError:
+        return False, "用户名已存在，请换一个。"
+
+
+def authenticate(username: str, password: str) -> int | None:
+    with conn() as c: row = c.execute("SELECT id,password_hash FROM users WHERE username=?", (username.strip(),)).fetchone()
+    return int(row["id"]) if row and verify_password(password, row["password_hash"]) else None
+
+
+def get_user(user_id: int | None) -> sqlite3.Row | None:
+    if not user_id: return None
+    with conn() as c: return c.execute("SELECT id,username FROM users WHERE id=?", (user_id,)).fetchone()
+
+
+def get_profile(user_id: int) -> dict[str, str]:
+    p = PROFILE_DEFAULTS.copy()
+    with conn() as c: row = c.execute("SELECT * FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
+    if row:
+        p.update({
+            "age": str(row["age"] if row["age"] is not None else p["age"]),
+            "employmentYears": str(row["employment_years"] if row["employment_years"] is not None else p["employmentYears"]),
+            "creditHistoryYears": str(row["credit_history_years"] if row["credit_history_years"] is not None else p["creditHistoryYears"]),
+            "idVerify": row["identity_verified"] or p["idVerify"], "threeVerify": row["three_factor_verified"] or p["threeVerify"],
+            "inCourt": str(row["court_record"] or 0), "isBlackList": str(row["blacklist"] or 0),
+        })
+    return p
+
+
+def update_profile(user_id: int, data: dict[str, Any]) -> None:
+    d = normalize_form(data); now = datetime.now().isoformat(timespec="seconds")
+    with conn() as c:
+        c.execute("""
+        INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,identity_verified,three_factor_verified,court_record,blacklist,updated_time)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET age=excluded.age, employment_years=excluded.employment_years,
+        credit_history_years=excluded.credit_history_years, identity_verified=excluded.identity_verified,
+        three_factor_verified=excluded.three_factor_verified, court_record=excluded.court_record,
+        blacklist=excluded.blacklist, updated_time=excluded.updated_time
+        """, (user_id, nonneg(d.get("age"), 35), nonneg(d.get("employmentYears"), 5), nonneg(d.get("creditHistoryYears"), 3), str(d.get("idVerify") or "未知"), str(d.get("threeVerify") or "未知"), int(fnum(d.get("inCourt"))), int(fnum(d.get("isBlackList"))), now))
+
+
+def save_record(user_id: int, result: dict[str, Any]) -> None:
+    a = result["loan_amount"]
+    with conn() as c:
+        c.execute("""
+        INSERT INTO assessment_records(user_id,monthly_income,monthly_expense,existing_monthly_debt,requested_loan_amount,loan_term,default_probability,credit_score,risk_level,recommended_loan_amount,created_time)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (user_id, a["monthly_income"], a["monthly_expense"], a["existing_monthly_repayment"], a["requested_amount"], a["loan_term"], result["probability"], result["credit_score"], result["level"], a["recommended_amount"], datetime.now().isoformat(timespec="seconds")))
+
+
+def history(user_id: int) -> list[sqlite3.Row]:
+    with conn() as c:
+        return c.execute("SELECT * FROM assessment_records WHERE user_id=? ORDER BY created_time DESC,id DESC LIMIT 30", (user_id,)).fetchall()
+
+def esc(v: Any) -> str: return html.escape(str(v), quote=True)
+def sel(cur: Any, exp: Any) -> str: return " selected" if str(cur) == str(exp) else ""
+def money(v: Any) -> str: return f"¥{fnum(v):,.0f}"
+
+
+def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
+    nav = (f'<nav><span>{esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>
+*{{box-sizing:border-box}}body{{margin:0;font-family:"Microsoft YaHei",Arial,sans-serif;color:#17212b;background:#f4f6f8}}header{{padding:20px 32px;background:#12324a;color:white;border-bottom:4px solid #2c7a7b;display:flex;justify-content:space-between;gap:20px;align-items:center}}h1{{margin:0 0 6px;font-size:24px}}header p{{margin:0;color:#cfe3ef}}nav{{display:flex;gap:14px;flex-wrap:wrap}}nav a,nav span{{color:white;text-decoration:none}}nav a{{border-bottom:1px solid rgba(255,255,255,.45)}}main{{padding:22px 32px}}.grid{{display:grid;grid-template-columns:minmax(360px,1.35fr) minmax(300px,.85fr);gap:20px}}section,.panel{{background:white;border:1px solid #dde3ea;border-radius:8px;padding:18px}}h2{{margin:0 0 14px;font-size:18px}}h3{{margin:12px 0 8px;font-size:15px}}.form-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}}.auth-form{{display:grid;gap:14px;max-width:420px}}label{{display:grid;gap:6px;font-size:13px;color:#435160}}input,select{{width:100%;height:36px;border:1px solid #c9d2dc;border-radius:6px;padding:0 10px;background:white;color:#17212b}}button,.button{{height:40px;border:0;border-radius:6px;background:#216869;color:white;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:0 16px}}button:hover,.button:hover{{background:#174f50}}.actions{{grid-column:1/-1;display:flex;gap:12px;align-items:center;flex-wrap:wrap}}.note{{color:#667486;font-size:13px;line-height:1.6}}.result{{display:grid;gap:12px}}.score-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}.score-card{{border:1px solid #dbe3ea;background:#f7fafc;border-radius:8px;padding:14px}}.score-card span{{color:#64748b;font-size:13px}}.score{{margin-top:6px;font-size:24px;font-weight:800;color:#12324a}}.level{{display:inline-block;width:fit-content;padding:7px 10px;border-radius:6px;background:#e6f2ef;color:#185e5f;font-weight:800}}.detail-block{{border-top:1px solid #e5ebf0;padding-top:10px}}.detail-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.detail-item{{background:#f8fafc;border:1px solid #e1e8ef;border-radius:6px;padding:10px;color:#526071;font-size:13px}}.detail-item strong{{color:#17212b;font-size:15px}}.advice-list{{margin:6px 0 0;padding-left:18px;color:#344256;line-height:1.7}}.metrics{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.metric{{background:#eef4f7;border-radius:6px;padding:10px;font-size:13px;color:#506172}}.metric strong{{display:block;margin-top:5px;font-size:18px;color:#12324a}}.flash{{margin-bottom:14px;padding:10px 12px;background:#fff7df;border:1px solid #ead18b;border-radius:6px;color:#6b520f}}table{{width:100%;border-collapse:collapse;background:white}}th,td{{border-bottom:1px solid #e1e8ef;padding:10px;text-align:left;font-size:13px}}th{{background:#f1f5f9;color:#405060}}@media(max-width:900px){{header{{align-items:flex-start;flex-direction:column}}.grid{{grid-template-columns:1fr}}.form-grid{{grid-template-columns:1fr}}}}
+</style></head><body><header><div><h1>银行客户信用风险评估系统</h1><p>个人基础信息保存、自动填充、违约风险预测与贷款额度建议</p></div>{nav}</header><main>{body}</main></body></html>'''
+
+
+def auth_page(kind: str, msg: str = "") -> str:
+    is_reg = kind == "register"; title = "用户注册" if is_reg else "用户登录"; action = "/register" if is_reg else "/login"
+    switch = '<a href="/login">已有账号，去登录</a>' if is_reg else '<a href="/register">没有账号，去注册</a>'
+    return layout(title, f'''<section class="panel"><h2>{title}</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="auth-form" method="post" action="{action}"><label>用户名<input name="username" required minlength="3" autocomplete="username"></label><label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password"></label><div class="actions"><button type="submit">{title}</button><span class="note">{switch}</span></div></form></section>''')
+
+
+def profile_form(p: dict[str, str], msg: str = "") -> str:
+    return f'''<section class="panel"><h2>个人基础信息</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="form-grid" method="post" action="/profile">
+<label>年龄<input name="age" type="number" min="0" value="{esc(p['age'])}"></label><label>工作年限<input name="employmentYears" type="number" min="0" step="0.5" value="{esc(p['employmentYears'])}"></label><label>信用历史年限<input name="creditHistoryYears" type="number" min="0" step="0.5" value="{esc(p['creditHistoryYears'])}"></label>
+<label>身份验证情况<select name="idVerify"><option{sel(p['idVerify'],'一致')}>一致</option><option{sel(p['idVerify'],'不一致')}>不一致</option><option{sel(p['idVerify'],'未知')}>未知</option></select></label><label>三要素验证情况<select name="threeVerify"><option{sel(p['threeVerify'],'一致')}>一致</option><option{sel(p['threeVerify'],'不一致')}>不一致</option><option{sel(p['threeVerify'],'未知')}>未知</option></select></label>
+<label>是否有法院记录<select name="inCourt"><option value="0"{sel(p['inCourt'],'0')}>否</option><option value="1"{sel(p['inCourt'],'1')}>是</option></select></label><label>是否在黑名单<select name="isBlackList"><option value="0"{sel(p['isBlackList'],'0')}>否</option><option value="1"{sel(p['isBlackList'],'1')}>是</option></select></label><div class="actions"><button type="submit">保存个人信息</button><a class="button" href="/">进入信用评估</a></div></form></section>'''
+
+
+def select_options(name: str, current: str, options: list[str]) -> str:
+    return f'<select name="{name}">' + ''.join(f'<option{sel(current, o)}>{esc(o)}</option>' for o in options) + '</select>'
+
+
+def yesno(name: str, current: str) -> str:
+    return f'<select name="{name}"><option value="0"{sel(current,"0")}>否</option><option value="1"{sel(current,"1")}>是</option></select>'
+
+
+def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
+    v = ASSESSMENT_DEFAULTS.copy(); v.update(profile)
+    body = f'''<div class="grid"><section><h2>信用评估申请信息</h2><form class="form-grid" id="riskForm">
+<label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label>
+<label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label>
+<label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label>
+<label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label>
+<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section><h2>评估结果</h2><div class="result" id="result"><div class="note">提交申请人信息后，这里会显示预测结果。</div></div><div class="metrics"><div class="metric">模型测试 AUC<strong id="auc">-</strong></div><div class="metric">模型类型<strong>逻辑回归</strong></div></div></section></div>
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="note">正在评估...</div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="note">评估失败，请重新登录后再试。</div>';return}}const d=await r.json();auc.textContent=d.auc;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
+    return layout("信用评估", body, user)
+
+
+def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
+    trs = ''.join(f"<tr><td>{esc(r['created_time'])}</td><td>{money(r['requested_loan_amount'])}</td><td>{r['loan_term']} 月</td><td>{esc(r['risk_level'])}</td><td>{r['default_probability']*100:.2f}%</td><td>{r['credit_score']:.2f}</td><td>{money(r['recommended_loan_amount'])}</td></tr>" for r in rows) or '<tr><td colspan="7" class="note">暂无历史评估记录。</td></tr>'
+    return layout("历史记录", f'<section class="panel"><h2>历史评估记录</h2><table><thead><tr><th>评估时间</th><th>申请金额</th><th>期限</th><th>风险等级</th><th>违约概率</th><th>信用评分</th><th>推荐额度</th></tr></thead><tbody>{trs}</tbody></table></section>', user)
 
 class RiskHandler(BaseHTTPRequestHandler):
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def send_body(self, status: int, body: str | bytes, ctype: str = "text/html; charset=utf-8", headers: dict[str, str] | None = None) -> None:
+        payload = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(status); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(payload)))
+        for k, v in (headers or {}).items(): self.send_header(k, v)
+        self.end_headers(); self.wfile.write(payload)
+
+    def redirect(self, location: str, headers: dict[str, str] | None = None) -> None:
+        self.send_body(302, b"", "text/plain; charset=utf-8", {"Location": location, **(headers or {})})
+
+    def form_data(self) -> dict[str, str]:
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0"))).decode("utf-8")
+        return {k: v[-1] for k, v in parse_qs(raw).items()}
+
+    def json_data(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+
+    def current_user_id(self) -> int | None:
+        jar = cookies.SimpleCookie(self.headers.get("Cookie", "")); morsel = jar.get(SESSION_COOKIE)
+        return SESSIONS.get(morsel.value) if morsel else None
+
+    def current_user(self) -> sqlite3.Row | None:
+        return get_user(self.current_user_id())
+
+    def require_user(self) -> sqlite3.Row | None:
+        user = self.current_user()
+        if not user: self.redirect("/login")
+        return user
+
+    def set_session_header(self, user_id: int) -> str:
+        token = secrets.token_urlsafe(32); SESSIONS[token] = user_id
+        return f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
+
+    def clear_session_header(self) -> str:
+        jar = cookies.SimpleCookie(self.headers.get("Cookie", "")); morsel = jar.get(SESSION_COOKIE)
+        if morsel: SESSIONS.pop(morsel.value, None)
+        return f"{SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        if path == "/":
-            self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
-            return
-        self._send(404, b"Not Found", "text/plain; charset=utf-8")
+        if path == "/login": self.send_body(200, auth_page("login")); return
+        if path == "/register": self.send_body(200, auth_page("register")); return
+        if path == "/logout": self.redirect("/login", {"Set-Cookie": self.clear_session_header()}); return
+        user = self.require_user()
+        if not user: return
+        if path == "/": self.send_body(200, index_page(user, get_profile(user["id"]))); return
+        if path == "/profile": self.send_body(200, layout("个人信息", profile_form(get_profile(user["id"])), user)); return
+        if path == "/history": self.send_body(200, history_page(user, history(user["id"]))); return
+        self.send_body(404, "Not Found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/predict":
-            self._send(404, b"Not Found", "text/plain; charset=utf-8")
+        if path == "/register":
+            data = self.form_data(); ok, msg = create_user(data.get("username", ""), data.get("password", ""))
+            self.send_body(200 if ok else 400, auth_page("login" if ok else "register", msg)); return
+        if path == "/login":
+            data = self.form_data(); user_id = authenticate(data.get("username", ""), data.get("password", ""))
+            if user_id: self.redirect("/", {"Set-Cookie": self.set_session_header(user_id)})
+            else: self.send_body(401, auth_page("login", "用户名或密码错误。"))
             return
+        user = self.require_user()
+        if not user: return
+        if path == "/profile":
+            update_profile(user["id"], self.form_data())
+            self.send_body(200, layout("个人信息", profile_form(get_profile(user["id"]), "个人信息已保存。"), user)); return
+        if path == "/predict":
+            result = predict_risk(self.json_data()); save_record(user["id"], result)
+            self.send_body(200, json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8"); return
+        self.send_body(404, "Not Found", "text/plain; charset=utf-8")
 
-        length = int(self.headers.get("Content-Length", "0"))
-        payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        result = predict_risk(payload)
-        self._send(
-            200,
-            json.dumps(result, ensure_ascii=False).encode("utf-8"),
-            "application/json; charset=utf-8",
-        )
-
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, fmt: str, *args: Any) -> None:
         return
 
 
 def run_server(host: str, port: int) -> None:
-    server = ThreadingHTTPServer((host, port), RiskHandler)
-    print(f"银行客户信用风险评估前端已启动: http://{host}:{port}")
+    init_db(); server = ThreadingHTTPServer((host, port), RiskHandler)
+    print(f"银行客户信用风险评估系统已启动: http://{host}:{port}")
     print(f"模型测试 AUC: {MODEL_AUC:.4f}")
     server.serve_forever()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-
+    parser = argparse.ArgumentParser(); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8000); parser.add_argument("--check", action="store_true")
+    args = parser.parse_args(); init_db()
     if args.check:
-        sample = {
-            "age": 35,
-            "CityId": "二线城市",
-            "education": "高中",
-            "maritalStatus": "已婚",
-            "sex": "男",
-            "transTotalAmt": 5000,
-            "transTotalCnt": 20,
-            "monthlyIncome": 10000,
-            "monthlyExpense": 4500,
-            "existingMonthlyRepayment": 1500,
-            "requestedAmount": 50000,
-            "loanTerm": 12,
-            "overdueCount": 1,
-            "creditCardUsage": 35,
-            "creditHistoryYears": 3,
-        }
-        print(predict_risk(sample))
-        return
-
+        sample = {"age": 35, "employmentYears": 5, "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男", "idVerify": "一致", "threeVerify": "一致", "inCourt": 0, "isBlackList": 0, "isDue": 0, "transTotalAmt": 5000, "transTotalCnt": 20, "monthlyIncome": 10000, "monthlyExpense": 4500, "existingMonthlyRepayment": 1500, "requestedAmount": 50000, "loanTerm": 12, "overdueCount": 1, "creditCardUsage": 35, "creditHistoryYears": 3}
+        print(predict_risk(sample)); return
     run_server(args.host, args.port)
 
 
