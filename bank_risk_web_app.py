@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -55,25 +56,56 @@ def load_data() -> pd.DataFrame:
     return pd.read_csv(DATA_PATH, encoding="utf-8").rename(columns={"Default1": "Default"}).dropna(subset=["Default"]).copy()
 
 
-def train_model() -> tuple[Pipeline, dict[str, Any], list[str], float]:
+MODEL_LABELS = {
+    "gradient_boosting": "梯度提升模型（推荐）",
+    "random_forest": "随机森林模型",
+    "extra_trees": "ExtraTrees 模型",
+    "adaboost": "AdaBoost 模型",
+    "logistic_regression": "逻辑回归模型",
+}
+MODEL_NOTES = {
+    "gradient_boosting": "\u9002\u5408\u7efc\u5408\u5224\u65ad\u591a\u6570\u5ba2\u6237\u60c5\u51b5",
+    "random_forest": "\u9002\u5408\u6536\u5165\u3001\u652f\u51fa\u3001\u8d1f\u503a\u8f83\u590d\u6742\u7684\u60c5\u51b5",
+    "extra_trees": "\u9002\u5408\u8d44\u6599\u4e0d\u591f\u7a33\u5b9a\u6216\u4fe1\u7528\u5386\u53f2\u8f83\u77ed\u7684\u60c5\u51b5",
+    "adaboost": "\u9002\u5408\u8bc6\u522b\u8f7b\u5fae\u903e\u671f\u7b49\u98ce\u9669\u4fe1\u53f7",
+    "logistic_regression": "\u9002\u5408\u4fe1\u7528\u72b6\u51b5\u7a33\u5b9a\u3001\u7ed3\u679c\u66f4\u6613\u89e3\u91ca\u7684\u60c5\u51b5",
+}
+DEFAULT_MODEL_KEY = "gradient_boosting"
+AUTO_MODEL_KEY = "auto"
+
+
+def _preprocessor(num_cols: list[str], cat_cols: list[str]) -> ColumnTransformer:
+    return ColumnTransformer([
+        ("num", SimpleImputer(strategy="median"), num_cols),
+        ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", _onehot())]), cat_cols),
+    ])
+
+
+def train_models() -> tuple[dict[str, Pipeline], dict[str, Any], list[str], dict[str, float]]:
     data = load_data(); y = data["Default"].astype(int); x = data.drop(columns=["Default"])
     num_cols = x.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = [c for c in x.columns if c not in num_cols]
     defaults: dict[str, Any] = {c: float(x[c].median()) for c in num_cols}
     for c in cat_cols:
-        mode = x[c].mode(dropna=True); defaults[c] = str(mode.iloc[0]) if not mode.empty else "未知"
-    pre = ColumnTransformer([
-        ("num", SimpleImputer(strategy="median"), num_cols),
-        ("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("onehot", _onehot())]), cat_cols),
-    ])
-    model = Pipeline([("preprocessor", pre), ("classifier", LogisticRegression(class_weight="balanced", solver="liblinear", max_iter=1000, random_state=33))])
+        mode = x[c].mode(dropna=True); defaults[c] = str(mode.iloc[0]) if not mode.empty else "\u672a\u77e5"
+    classifiers = {
+        "gradient_boosting": GradientBoostingClassifier(n_estimators=180, learning_rate=0.04, max_depth=3, random_state=33),
+        "random_forest": RandomForestClassifier(n_estimators=300, max_depth=8, min_samples_leaf=10, class_weight="balanced", random_state=33, n_jobs=-1),
+        "extra_trees": ExtraTreesClassifier(n_estimators=300, max_depth=10, min_samples_leaf=8, class_weight="balanced", random_state=33, n_jobs=-1),
+        "adaboost": AdaBoostClassifier(n_estimators=180, learning_rate=0.05, random_state=33),
+        "logistic_regression": LogisticRegression(class_weight="balanced", solver="liblinear", max_iter=1000, random_state=33),
+    }
     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=33, stratify=y)
-    model.fit(x_train, y_train)
-    return model, defaults, x.columns.tolist(), float(roc_auc_score(y_test, model.predict_proba(x_test)[:, 1]))
+    models: dict[str, Pipeline] = {}; aucs: dict[str, float] = {}
+    for key, classifier in classifiers.items():
+        model = Pipeline([("preprocessor", _preprocessor(num_cols, cat_cols)), ("classifier", classifier)])
+        model.fit(x_train, y_train)
+        models[key] = model
+        aucs[key] = float(roc_auc_score(y_test, model.predict_proba(x_test)[:, 1]))
+    return models, defaults, x.columns.tolist(), aucs
 
 
-MODEL, DEFAULTS, FEATURE_COLUMNS, MODEL_AUC = train_model()
-
+MODELS, DEFAULTS, FEATURE_COLUMNS, MODEL_AUCS = train_models()
 
 def fnum(v: Any, default: float = 0.0) -> float:
     try:
@@ -173,12 +205,56 @@ def improvement_advice(d: dict[str, Any], grade: str) -> list[str]:
     return tips or ["当前信用状况较稳定，建议继续保持良好还款习惯和合理负债水平。"]
 
 
+
+def recommend_model(form_data: dict[str, Any]) -> tuple[str, str]:
+    idv = str(form_data.get("idVerify", "")).strip()
+    three = str(form_data.get("threeVerify", "")).strip()
+    severe_identity = idv == "\u4e0d\u4e00\u81f4" or three == "\u4e0d\u4e00\u81f4"
+    uncertain_identity = idv == "\u672a\u77e5" or three == "\u672a\u77e5"
+    court = fnum(form_data.get("inCourt")) > 0
+    blacklist = fnum(form_data.get("isBlackList")) > 0
+    due = fnum(form_data.get("isDue")) > 0
+    overdue = nonneg(form_data.get("overdueCount"))
+    usage = pct(form_data.get("creditCardUsage"))
+    income = nonneg(form_data.get("monthlyIncome"))
+    expense = nonneg(form_data.get("monthlyExpense"))
+    debt = nonneg(form_data.get("existingMonthlyRepayment"))
+    requested = nonneg(form_data.get("requestedAmount"))
+    term = posint(form_data.get("loanTerm"), 12)
+    disposable = income - expense - debt
+    debt_ratio = debt / income if income > 0 else 1
+    expense_ratio = expense / income if income > 0 else 1
+    monthly_request = requested / term
+    history = nonneg(form_data.get("creditHistoryYears"))
+
+    if blacklist or court or overdue >= 3 or severe_identity:
+        return "gradient_boosting", "\u5ba2\u6237\u5b58\u5728\u9ed1\u540d\u5355\u3001\u6cd5\u9662\u8bb0\u5f55\u3001\u591a\u6b21\u903e\u671f\u6216\u9a8c\u8bc1\u4e0d\u4e00\u81f4\u7b49\u9ad8\u98ce\u9669\u7279\u5f81\uff0c\u4f18\u5148\u4f7f\u7528\u533a\u5206\u80fd\u529b\u66f4\u5f3a\u7684\u68af\u5ea6\u63d0\u5347\u6a21\u578b\u3002"
+    if income <= 0 or disposable <= 0 or debt_ratio > 0.45 or expense_ratio > 0.75 or monthly_request > disposable:
+        return "random_forest", "\u5ba2\u6237\u6536\u652f\u6216\u8d1f\u503a\u538b\u529b\u8f83\u9ad8\uff0c\u4f7f\u7528\u968f\u673a\u68ee\u6797\u6a21\u578b\u66f4\u9002\u5408\u5904\u7406\u591a\u4e2a\u8fd8\u6b3e\u80fd\u529b\u53d8\u91cf\u7684\u7ec4\u5408\u5f71\u54cd\u3002"
+    if usage > 70 or history < 2 or uncertain_identity:
+        return "extra_trees", "\u5ba2\u6237\u5b58\u5728\u4fe1\u7528\u5361\u4f7f\u7528\u7387\u504f\u9ad8\u3001\u4fe1\u7528\u5386\u53f2\u8f83\u77ed\u6216\u9a8c\u8bc1\u4fe1\u606f\u4e0d\u786e\u5b9a\uff0c\u4f7f\u7528 ExtraTrees \u6a21\u578b\u4fbf\u4e8e\u5bf9\u4e0d\u7a33\u5b9a\u7279\u5f81\u505a\u66f4\u7a33\u5065\u7684\u5224\u65ad\u3002"
+    if due or overdue > 0 or usage > 50:
+        return "adaboost", "\u5ba2\u6237\u5b58\u5728\u8f7b\u5fae\u903e\u671f\u6216\u4fe1\u7528\u5361\u4f7f\u7528\u7387\u504f\u9ad8\uff0c\u4f7f\u7528 AdaBoost \u6a21\u578b\u66f4\u9002\u5408\u5bf9\u8f7b\u5fae\u98ce\u9669\u4fe1\u53f7\u8fdb\u884c\u5f3a\u5316\u5224\u522b\u3002"
+    if history >= 5 and debt_ratio < 0.25 and disposable > 0 and idv == "\u4e00\u81f4" and three == "\u4e00\u81f4":
+        return "logistic_regression", "\u5ba2\u6237\u4fe1\u7528\u5386\u53f2\u8f83\u957f\u3001\u8d1f\u503a\u538b\u529b\u8f83\u4f4e\u4e14\u9a8c\u8bc1\u4fe1\u606f\u7a33\u5b9a\uff0c\u4f7f\u7528\u903b\u8f91\u56de\u5f52\u6a21\u578b\u53ef\u4ee5\u5f97\u5230\u66f4\u7a33\u5b9a\u3001\u6613\u89e3\u91ca\u7684\u57fa\u7840\u5224\u65ad\u3002"
+    return "gradient_boosting", "\u5ba2\u6237\u4fe1\u606f\u5c5e\u4e8e\u4e00\u822c\u60c5\u51b5\uff0c\u9ed8\u8ba4\u4f7f\u7528\u7efc\u5408\u5224\u65ad\u80fd\u529b\u8f83\u5f3a\u7684\u68af\u5ea6\u63d0\u5347\u6a21\u578b\u3002"
+
 def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
+    requested_model = str(form_data.get("modelName") or AUTO_MODEL_KEY)
+    recommended_key, recommendation_reason = recommend_model(form_data)
+    auto_selected = requested_model == AUTO_MODEL_KEY
+    if auto_selected:
+        model_key = recommended_key
+    elif requested_model in MODELS:
+        model_key = requested_model
+    else:
+        model_key = recommended_key
+        auto_selected = True
     form_data = normalize_form(form_data)
     row = DEFAULTS.copy()
     for k, v in form_data.items():
         if k in row and v not in ("", None): row[k] = float(v) if isinstance(DEFAULTS[k], float) else str(v)
-    base = float(MODEL.predict_proba(pd.DataFrame([row], columns=FEATURE_COLUMNS))[0, 1])
+    base = float(MODELS[model_key].predict_proba(pd.DataFrame([row], columns=FEATURE_COLUMNS))[0, 1])
     prob, adj = apply_business_rules(base, form_data)
     grade = grade_from_probability(prob)
     level, suggestion, coef, process, expected_time = RISK_POLICIES[grade]
@@ -187,8 +263,11 @@ def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
         "probability": round(prob, 4), "base_probability": round(base, 4), "business_adjustment": round(adj, 4),
         "percentage": f"{prob * 100:.2f}%", "credit_score": round(100 - prob * 100, 2),
         "risk_grade": grade, "level": level, "suggestion": suggestion, "loan_amount": amount,
+        "model_key": model_key, "model_label": MODEL_LABELS[model_key],
+        "recommended_model_key": recommended_key, "recommended_model_label": MODEL_LABELS[recommended_key],
+        "model_auto_selected": auto_selected, "model_recommendation_reason": recommendation_reason,
         "improvement_advice": improvement_advice(form_data, grade), "loan_process": process,
-        "expected_time": expected_time, "auc": round(MODEL_AUC, 4), "normalized_input": form_data,
+        "expected_time": expected_time, "auc": round(MODEL_AUCS[model_key], 4), "normalized_input": form_data,
     }
 
 
@@ -344,15 +423,25 @@ def yesno(name: str, current: str) -> str:
     return f'<select name="{name}"><option value="0"{sel(current,"0")}>否</option><option value="1"{sel(current,"1")}>是</option></select>'
 
 
+
+
+def model_select() -> str:
+    options = f'<option value="{AUTO_MODEL_KEY}" selected>\u7cfb\u7edf\u81ea\u52a8\u63a8\u8350\u6a21\u578b - \u6839\u636e\u7533\u8bf7\u4eba\u4fe1\u606f\u81ea\u52a8\u9009\u62e9</option>'
+    options += ''.join(
+        f'<option value="{esc(key)}">{esc(label)} - {esc(MODEL_NOTES[key])}</option>'
+        for key, label in MODEL_LABELS.items()
+    )
+    return f'<select name="modelName">{options}</select>'
+
 def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
     v = ASSESSMENT_DEFAULTS.copy(); v.update(profile)
     body = f'''<div class="grid"><section><h2>信用评估申请信息</h2><form class="form-grid" id="riskForm">
-<label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label>
+<label>评估模型{model_select()}</label><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label>
 <label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label>
 <label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label>
 <label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label>
-<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section><h2>评估结果</h2><div class="result" id="result"><div class="note">提交申请人信息后，这里会显示预测结果。</div></div><div class="metrics"><div class="metric">模型测试 AUC<strong id="auc">-</strong></div><div class="metric">模型类型<strong>逻辑回归</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="note">正在评估...</div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="note">评估失败，请重新登录后再试。</div>';return}}const d=await r.json();auc.textContent=d.auc;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
+<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section><h2>评估结果</h2><div class="result" id="result"><div class="note">提交申请人信息后，这里会显示预测结果。</div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="note">正在评估...</div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="note">评估失败，请重新登录后再试。</div>';return}}const d=await r.json();auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
@@ -438,15 +527,16 @@ class RiskHandler(BaseHTTPRequestHandler):
 def run_server(host: str, port: int) -> None:
     init_db(); server = ThreadingHTTPServer((host, port), RiskHandler)
     print(f"银行客户信用风险评估系统已启动: http://{host}:{port}")
-    print(f"模型测试 AUC: {MODEL_AUC:.4f}")
+    print("模型测试 AUC:")
+    for key, label in MODEL_LABELS.items():
+        print(f"- {label}: {MODEL_AUCS[key]:.4f}")
     server.serve_forever()
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8000); parser.add_argument("--check", action="store_true")
     args = parser.parse_args(); init_db()
     if args.check:
-        sample = {"age": 35, "employmentYears": 5, "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男", "idVerify": "一致", "threeVerify": "一致", "inCourt": 0, "isBlackList": 0, "isDue": 0, "transTotalAmt": 5000, "transTotalCnt": 20, "monthlyIncome": 10000, "monthlyExpense": 4500, "existingMonthlyRepayment": 1500, "requestedAmount": 50000, "loanTerm": 12, "overdueCount": 1, "creditCardUsage": 35, "creditHistoryYears": 3}
+        sample = {"modelName": AUTO_MODEL_KEY, "age": 35, "employmentYears": 5, "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男", "idVerify": "一致", "threeVerify": "一致", "inCourt": 0, "isBlackList": 0, "isDue": 0, "transTotalAmt": 5000, "transTotalCnt": 20, "monthlyIncome": 10000, "monthlyExpense": 4500, "existingMonthlyRepayment": 1500, "requestedAmount": 50000, "loanTerm": 12, "overdueCount": 1, "creditCardUsage": 35, "creditHistoryYears": 3}
         print(predict_risk(sample)); return
     run_server(args.host, args.port)
 
