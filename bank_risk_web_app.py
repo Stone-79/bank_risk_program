@@ -399,13 +399,13 @@ APP_CSS = """
     --ink: #16202a;
     --muted: #667085;
     --line: #d9e1e8;
-    --panel: rgba(255, 255, 255, .88);
+    --panel: rgba(255, 255, 255, .66);
     --soft: #f5f7fb;
     --navy: #111827;
-    --teal: #0f766e;
-    --cyan: #0891b2;
-    --amber: #d97706;
-    --rose: #e11d48;
+    --blue: #2563eb;
+    --sky: #0ea5e9;
+    --indigo: #4f46e5;
+    --pink: #ec4899;
     --shadow: 0 18px 42px rgba(15, 23, 42, .12);
 }
 * { box-sizing: border-box; }
@@ -415,9 +415,15 @@ body {
     font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
     color: var(--ink);
     background:
-        radial-gradient(circle at 12% 12%, rgba(8, 145, 178, .14), transparent 28%),
-        radial-gradient(circle at 88% 10%, rgba(217, 119, 6, .12), transparent 25%),
-        linear-gradient(180deg, #f7fafc 0%, #eef3f8 44%, #f8fafc 100%);
+        radial-gradient(circle at 12% 12%, rgba(59, 130, 246, .18), transparent 28%),
+        radial-gradient(circle at 88% 10%, rgba(14, 165, 233, .14), transparent 25%),
+        linear-gradient(180deg, #eff6ff 0%, #dbeafe 46%, #f8fbff 100%);
+}
+body.auth-page {
+    background:
+        radial-gradient(circle at 16% 14%, rgba(96, 165, 250, .20), transparent 30%),
+        radial-gradient(circle at 84% 18%, rgba(125, 211, 252, .17), transparent 28%),
+        linear-gradient(135deg, #eff6ff 0%, #dbeafe 44%, #f8fbff 100%);
 }
 body::before {
     content: "";
@@ -439,10 +445,11 @@ header {
     align-items: center;
     gap: 22px;
     padding: 18px 36px;
-    color: white;
-    background: linear-gradient(135deg, rgba(17, 24, 39, .96), rgba(15, 118, 110, .92));
-    border-bottom: 1px solid rgba(255, 255, 255, .16);
-    box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+    color: #1e3a8a;
+    background: linear-gradient(135deg, rgba(147, 197, 253, .72), rgba(96, 165, 250, .62), rgba(186, 230, 253, .58));
+    border-bottom: 1px solid rgba(255, 255, 255, .34);
+    box-shadow: 0 10px 28px rgba(37, 99, 235, .12);
+    backdrop-filter: blur(16px);
 }
 .brand { display: flex; align-items: center; gap: 14px; min-width: 260px; }
 .brand-mark {
@@ -454,14 +461,14 @@ header {
     font-weight: 900;
     letter-spacing: 0;
     color: #0b1220;
-    background: linear-gradient(135deg, #f8fafc, #67e8f9);
+    background: linear-gradient(135deg, #f8fafc, #bfdbfe);
     box-shadow: inset 0 -10px 18px rgba(15, 23, 42, .12);
 }
 h1 { margin: 0 0 5px; font-size: 22px; line-height: 1.2; letter-spacing: 0; }
-header p { margin: 0; color: rgba(255, 255, 255, .72); font-size: 13px; }
+header p { margin: 0; color: rgba(30, 58, 138, .68); font-size: 13px; }
 nav { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
 nav a, nav span {
-    color: white;
+    color: #1e3a8a;
     text-decoration: none;
     min-height: 34px;
     display: inline-flex;
@@ -469,11 +476,11 @@ nav a, nav span {
     border-radius: 7px;
     padding: 0 12px;
     font-size: 13px;
-    background: rgba(255, 255, 255, .09);
-    border: 1px solid rgba(255, 255, 255, .12);
+    background: rgba(255, 255, 255, .24);
+    border: 1px solid rgba(255, 255, 255, .32);
 }
-nav span { background: rgba(255, 255, 255, .18); font-weight: 700; }
-nav a:hover { background: rgba(255, 255, 255, .2); }
+nav span { background: rgba(255, 255, 255, .36); font-weight: 700; }
+nav a:hover { background: rgba(255, 255, 255, .28); }
 main {
     position: relative;
     width: min(1440px, 100%);
@@ -483,19 +490,25 @@ main {
 .grid { display: grid; grid-template-columns: minmax(420px, 1.35fr) minmax(330px, .82fr); gap: 22px; align-items: start; }
 section, .panel {
     background: var(--panel);
-    border: 1px solid rgba(148, 163, 184, .28);
+    border: 1px solid rgba(255, 255, 255, .48);
     border-radius: 8px;
     padding: 22px;
-    box-shadow: var(--shadow);
-    backdrop-filter: blur(12px);
+    box-shadow: 0 18px 42px rgba(190, 24, 93, .11);
+    backdrop-filter: blur(18px);
 }
-.input-panel { border-top: 4px solid var(--cyan); }
-.result-panel { position: sticky; top: 98px; border-top: 4px solid var(--amber); }
+.input-panel { border-top: 4px solid var(--blue); }
+.result-panel { position: sticky; top: 98px; border-top: 4px solid var(--pink); }
 h2 { margin: 0 0 16px; font-size: 18px; line-height: 1.25; }
 h3 { margin: 14px 0 10px; font-size: 15px; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .auth-shell { min-height: calc(100vh - 170px); display: grid; place-items: center; }
-.auth-card { width: min(460px, 100%); }
+.auth-card {
+    width: min(460px, 100%);
+    background: rgba(255, 255, 255, .58);
+    border-color: rgba(255, 255, 255, .46);
+    box-shadow: 0 22px 52px rgba(190, 24, 93, .14);
+    backdrop-filter: blur(18px);
+}
 .auth-form { display: grid; gap: 16px; }
 label { display: grid; gap: 7px; font-size: 13px; color: #475467; font-weight: 700; }
 input, select {
@@ -510,12 +523,12 @@ input, select {
     outline: none;
     transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
-input:focus, select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(8, 145, 178, .16); background: white; }
+input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37, 99, 235, .16); background: white; }
 button, .button {
     min-height: 42px;
     border: 0;
     border-radius: 7px;
-    background: linear-gradient(135deg, var(--teal), var(--cyan));
+    background: linear-gradient(135deg, var(--blue), var(--sky));
     color: white;
     font-weight: 800;
     cursor: pointer;
@@ -524,7 +537,7 @@ button, .button {
     align-items: center;
     justify-content: center;
     padding: 0 18px;
-    box-shadow: 0 12px 22px rgba(8, 145, 178, .22);
+    box-shadow: 0 12px 22px rgba(37, 99, 235, .22);
 }
 button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1px); }
 .actions { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -536,16 +549,18 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
     align-content: center;
     gap: 10px;
     padding: 18px;
-    border: 1px dashed #b7c4d1;
+    border: 1px dashed rgba(236, 72, 153, .32);
     border-radius: 8px;
-    background: linear-gradient(135deg, rgba(8,145,178,.08), rgba(217,119,6,.08));
+    background: linear-gradient(135deg, rgba(255,255,255,.40), rgba(252,231,243,.42));
+    backdrop-filter: blur(10px);
 }
 .score-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .score-card {
-    border: 1px solid rgba(148, 163, 184, .24);
-    background: linear-gradient(180deg, #ffffff, #f4f7fb);
+    border: 1px solid rgba(255, 255, 255, .46);
+    background: linear-gradient(180deg, rgba(255,255,255,.58), rgba(252,231,243,.34));
     border-radius: 8px;
     padding: 16px;
+    backdrop-filter: blur(10px);
 }
 .score-card span { color: var(--muted); font-size: 13px; }
 .score { margin-top: 7px; font-size: 28px; font-weight: 900; color: #0f172a; letter-spacing: 0; }
@@ -556,45 +571,47 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
     min-height: 34px;
     padding: 0 12px;
     border-radius: 7px;
-    background: rgba(15, 118, 110, .12);
-    color: #0f766e;
+    background: rgba(37, 99, 235, .12);
+    color: #1d4ed8;
     font-weight: 900;
 }
 .detail-block { border-top: 1px solid #e4eaf0; padding-top: 12px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .detail-item {
-    background: #f8fafc;
-    border: 1px solid #e1e8ef;
+    background: rgba(255, 255, 255, .46);
+    border: 1px solid rgba(255, 255, 255, .42);
     border-radius: 7px;
     padding: 11px;
     color: #526071;
     font-size: 13px;
+    backdrop-filter: blur(10px);
 }
 .detail-item strong { display: inline-block; margin-top: 4px; color: var(--ink); font-size: 15px; }
 .advice-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.75; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .metric {
-    background: #f1f6f8;
-    border: 1px solid #dbe7ee;
+    background: rgba(255, 255, 255, .46);
+    border: 1px solid rgba(255, 255, 255, .42);
     border-radius: 8px;
     padding: 12px;
     font-size: 13px;
     color: #506172;
+    backdrop-filter: blur(10px);
 }
 .metric strong { display: block; margin-top: 6px; font-size: 19px; color: #0f172a; }
 .flash {
     margin-bottom: 14px;
     padding: 11px 13px;
-    background: #fffbeb;
-    border: 1px solid #f5d98c;
+    background: #fff1f7;
+    border: 1px solid #f9a8d4;
     border-radius: 7px;
-    color: #854d0e;
+    color: #9d174d;
 }
-.table-wrap { overflow-x: auto; border: 1px solid #e1e8ef; border-radius: 8px; }
-table { width: 100%; border-collapse: collapse; background: white; min-width: 760px; }
-th, td { border-bottom: 1px solid #e1e8ef; padding: 12px 10px; text-align: left; font-size: 13px; }
-th { background: #edf4f7; color: #405060; font-weight: 800; }
-tr:hover td { background: #fafcff; }
+.table-wrap { overflow-x: auto; border: 1px solid rgba(255, 255, 255, .44); border-radius: 8px; backdrop-filter: blur(12px); }
+table { width: 100%; border-collapse: collapse; background: rgba(255, 255, 255, .42); min-width: 760px; }
+th, td { border-bottom: 1px solid rgba(255, 255, 255, .42); padding: 12px 10px; text-align: left; font-size: 13px; }
+th { background: rgba(255, 255, 255, .48); color: #405060; font-weight: 800; }
+tr:hover td { background: rgba(255, 255, 255, .38); }
 @media (max-width: 980px) {
     header { align-items: flex-start; flex-direction: column; padding: 18px 20px; position: static; }
     nav { justify-content: flex-start; }
@@ -616,7 +633,8 @@ tr:hover td { background: #fafcff; }
 
 def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
     nav = (f'<nav><span>{esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
+    body_class = "app-page" if user else "auth-page"
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body class="{body_class}"><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
 
 
 def auth_page(kind: str, msg: str = "") -> str:
