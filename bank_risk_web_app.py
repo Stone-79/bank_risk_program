@@ -501,6 +501,30 @@ section, .panel {
 h2 { margin: 0 0 16px; font-size: 18px; line-height: 1.25; }
 h3 { margin: 14px 0 10px; font-size: 15px; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.application-form { display: grid; gap: 16px; }
+.form-section {
+    border: 1px solid rgba(255, 255, 255, .44);
+    border-radius: 8px;
+    padding: 15px;
+    background: rgba(255, 255, 255, .34);
+    backdrop-filter: blur(12px);
+}
+.form-section legend {
+    padding: 0 8px;
+    color: #1e3a8a;
+    font-weight: 900;
+    font-size: 14px;
+}
+.section-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+#riskForm label { position: relative; }
+#riskForm label::before {
+    content: "*";
+    position: absolute;
+    top: 0;
+    right: 0;
+    color: var(--pink);
+    font-weight: 900;
+}
 .auth-shell { min-height: calc(100vh - 170px); display: grid; place-items: center; }
 .auth-card {
     width: min(460px, 100%);
@@ -540,7 +564,10 @@ button, .button {
     box-shadow: 0 12px 22px rgba(37, 99, 235, .22);
 }
 button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+.button.secondary { background: rgba(255, 255, 255, .54); color: #1e3a8a; box-shadow: none; border: 1px solid rgba(37, 99, 235, .18); }
 .actions { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.result-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.save-status { min-height: 20px; }
 .note { color: var(--muted); font-size: 13px; line-height: 1.65; font-weight: 400; }
 .result { display: grid; gap: 14px; }
 .result-empty {
@@ -618,13 +645,13 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
     main { padding: 20px; }
     .grid { grid-template-columns: 1fr; }
     .result-panel { position: static; }
-    .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .form-grid, .section-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
     .brand { align-items: flex-start; min-width: 0; }
     .brand-mark { width: 40px; height: 40px; }
     h1 { font-size: 19px; }
-    .form-grid, .score-row, .detail-grid, .metrics { grid-template-columns: 1fr; }
+    .form-grid, .section-fields, .score-row, .detail-grid, .metrics { grid-template-columns: 1fr; }
     section, .panel { padding: 16px; }
     nav a, nav span { flex: 1 1 auto; justify-content: center; }
 }
@@ -632,7 +659,7 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
 
 
 def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
-    nav = (f'<nav><span>{esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
+    nav = (f'<nav><span>用户 {esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
     body_class = "app-page" if user else "auth-page"
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body class="{body_class}"><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
 
@@ -670,13 +697,13 @@ def model_select() -> str:
 
 def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
     v = ASSESSMENT_DEFAULTS.copy(); v.update(profile)
-    body = f'''<div class="grid"><section class="input-panel"><h2>信用评估申请信息</h2><form class="form-grid" id="riskForm">
-<label>评估模型{model_select()}</label><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label>
-<label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label>
-<label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label>
-<label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label>
-<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
+    body = f'''<div class="grid"><section class="input-panel"><h2>贷款申请信息录入</h2><form class="application-form" id="riskForm">
+<fieldset class="form-section"><legend>个人基本信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label><label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label></div></fieldset>
+<fieldset class="form-section"><legend>收入与支出信息</legend><div class="section-fields"><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label></div></fieldset>
+<fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
+<fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
+<div class="actions"><button type="submit">评估违约风险</button><span class="note">带 * 的字段为必填项；长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录已保存，可在历史记录中查看。";btn.textContent="已保存";}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function resetAssessment(){{lastResult=null;result.innerHTML='<div class="result-empty"><strong>等待提交评估</strong><span class="note">修改申请信息后重新提交评估。</span></div>';auc.textContent="-";form.scrollIntoView({{behavior:"smooth",block:"start"}});}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="resetAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
@@ -751,8 +778,11 @@ class RiskHandler(BaseHTTPRequestHandler):
             update_profile(user["id"], self.form_data())
             self.send_body(200, layout("个人信息", profile_form(get_profile(user["id"]), "个人信息已保存。"), user)); return
         if path == "/predict":
-            result = predict_risk(self.json_data()); save_record(user["id"], result)
+            result = predict_risk(self.json_data())
             self.send_body(200, json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8"); return
+        if path == "/save_record":
+            save_record(user["id"], self.json_data())
+            self.send_body(200, json.dumps({"ok": True}, ensure_ascii=False), "application/json; charset=utf-8"); return
         self.send_body(404, "Not Found", "text/plain; charset=utf-8")
 
     def log_message(self, fmt: str, *args: Any) -> None:
