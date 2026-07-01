@@ -207,6 +207,35 @@ def improvement_advice(d: dict[str, Any], grade: str) -> list[str]:
     return tips or ["当前信用状况较稳定，建议继续保持良好还款习惯和合理负债水平。"]
 
 
+def risk_factors(d: dict[str, Any], prob: float, adj: float, grade: str) -> list[str]:
+    factors: list[str] = []
+    income, expense, debt = nonneg(d.get("monthlyIncome")), nonneg(d.get("monthlyExpense")), nonneg(d.get("existingMonthlyRepayment"))
+    requested, term = nonneg(d.get("requestedAmount")), posint(d.get("loanTerm"), 12)
+    disposable = income - expense - debt
+    debt_ratio = debt / income if income > 0 else 1
+    expense_ratio = expense / income if income > 0 else 1
+    monthly_request = requested / term
+    overdue = nonneg(d.get("overdueCount"))
+    usage = pct(d.get("creditCardUsage"))
+    history = nonneg(d.get("creditHistoryYears"))
+    if str(d.get("isBlackList")) == "1": factors.append("命中黑名单记录，显著推高风险等级")
+    if str(d.get("inCourt")) == "1": factors.append("存在法院记录，需要更严格人工复核")
+    if str(d.get("idVerify")) == "不一致" or str(d.get("threeVerify")) == "不一致": factors.append("身份或三要素验证不一致，影响授信可信度")
+    if overdue >= 3: factors.append("历史逾期次数较多，是本次风险判断的关键因素")
+    elif overdue > 0: factors.append("存在少量历史逾期记录，轻度抬高违约概率")
+    if income <= 0 or disposable <= 0: factors.append("可支配收入不足，还款能力压力较高")
+    elif monthly_request > disposable: factors.append("申请金额对应月均还款压力超过可支配收入")
+    if debt_ratio > 0.45: factors.append("已有负债收入比较高，压缩新增贷款承受能力")
+    elif expense_ratio > 0.75: factors.append("月支出占收入比例较高，现金流缓冲偏弱")
+    if usage > 70: factors.append("信用卡使用率偏高，短期资金压力信号较明显")
+    elif usage > 50: factors.append("信用卡使用率略高，建议控制额度占用")
+    if history < 2: factors.append("信用历史较短，模型可参考的稳定还款记录有限")
+    if adj > 0.05: factors.append("业务规则在模型基础概率上追加了风险修正")
+    if grade in {"A", "B"} and not factors: factors.append("身份信息稳定、负债压力可控，整体风险较低")
+    if prob >= 0.4 and not factors: factors.append("模型综合特征后判断风险偏高，建议结合人工复核")
+    return factors[:5]
+
+
 
 def recommend_model(form_data: dict[str, Any]) -> tuple[str, str]:
     idv = str(form_data.get("idVerify", "")).strip()
@@ -268,7 +297,7 @@ def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
         "model_key": model_key, "model_label": MODEL_LABELS[model_key],
         "recommended_model_key": recommended_key, "recommended_model_label": MODEL_LABELS[recommended_key],
         "model_auto_selected": auto_selected, "model_recommendation_reason": recommendation_reason,
-        "improvement_advice": improvement_advice(form_data, grade), "loan_process": process,
+        "improvement_advice": improvement_advice(form_data, grade), "risk_factors": risk_factors(form_data, prob, adj, grade), "loan_process": process,
         "expected_time": expected_time, "auc": round(MODEL_AUCS[model_key], 4), "normalized_input": form_data,
     }
 
@@ -577,8 +606,35 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
 .actions { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .result-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .save-status { min-height: 20px; }
+.toast {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 20;
+    padding: 12px 16px;
+    border-radius: 8px;
+    color: #075985;
+    background: rgba(240, 249, 255, .92);
+    border: 1px solid rgba(14, 165, 233, .26);
+    box-shadow: 0 18px 38px rgba(15, 23, 42, .16);
+    backdrop-filter: blur(14px);
+}
 .note { color: var(--muted); font-size: 13px; line-height: 1.65; font-weight: 400; }
 .result { display: grid; gap: 14px; }
+.risk-grade-A { --risk-color: #2563eb; --risk-soft: rgba(37, 99, 235, .12); }
+.risk-grade-B { --risk-color: #0ea5e9; --risk-soft: rgba(14, 165, 233, .13); }
+.risk-grade-C { --risk-color: #d97706; --risk-soft: rgba(217, 119, 6, .14); }
+.risk-grade-D { --risk-color: #ea580c; --risk-soft: rgba(234, 88, 12, .16); }
+.risk-grade-E { --risk-color: #e11d48; --risk-soft: rgba(225, 29, 72, .16); }
+.result-shell {
+    display: grid;
+    gap: 14px;
+    border: 1px solid rgba(255, 255, 255, .46);
+    border-radius: 8px;
+    padding: 14px;
+    background: rgba(255, 255, 255, .34);
+    backdrop-filter: blur(10px);
+}
 .result-empty {
     min-height: 164px;
     display: grid;
@@ -600,6 +656,39 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
 }
 .score-card span { color: var(--muted); font-size: 13px; }
 .score { margin-top: 7px; font-size: 28px; font-weight: 900; color: #0f172a; letter-spacing: 0; }
+.score-ring-card { display: grid; justify-items: center; gap: 8px; }
+.score-ring {
+    width: 122px;
+    height: 122px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: conic-gradient(var(--risk-color) calc(var(--score) * 1%), rgba(148, 163, 184, .22) 0);
+}
+.score-ring-inner {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: rgba(255, 255, 255, .88);
+    color: #0f172a;
+    font-size: 24px;
+    font-weight: 900;
+}
+.risk-bar-card { display: grid; align-content: center; gap: 10px; }
+.risk-bar {
+    height: 12px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(148, 163, 184, .22);
+}
+.risk-bar-fill {
+    height: 100%;
+    width: var(--risk);
+    border-radius: inherit;
+    background: linear-gradient(90deg, #38bdf8, var(--risk-color));
+}
 .level {
     display: inline-flex;
     width: fit-content;
@@ -607,8 +696,8 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
     min-height: 34px;
     padding: 0 12px;
     border-radius: 7px;
-    background: rgba(37, 99, 235, .12);
-    color: #1d4ed8;
+    background: var(--risk-soft);
+    color: var(--risk-color);
     font-weight: 900;
 }
 .detail-block { border-top: 1px solid #e4eaf0; padding-top: 12px; }
@@ -624,6 +713,7 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
 }
 .detail-item strong { display: inline-block; margin-top: 4px; color: var(--ink); font-size: 15px; }
 .advice-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.75; }
+.factor-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.7; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .metric {
     background: rgba(255, 255, 255, .46);
@@ -648,6 +738,18 @@ table { width: 100%; border-collapse: collapse; background: rgba(255, 255, 255, 
 th, td { border-bottom: 1px solid rgba(255, 255, 255, .42); padding: 12px 10px; text-align: left; font-size: 13px; }
 th { background: rgba(255, 255, 255, .48); color: #405060; font-weight: 800; }
 tr:hover td { background: rgba(255, 255, 255, .38); }
+.trend-panel { display: grid; gap: 12px; margin-bottom: 16px; }
+.trend-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.trend-chart {
+    width: 100%;
+    height: 150px;
+    border: 1px solid rgba(255,255,255,.42);
+    border-radius: 8px;
+    background: rgba(255,255,255,.36);
+}
+.trend-chart svg { width: 100%; height: 100%; display: block; }
+.trend-line { fill: none; stroke: #2563eb; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.trend-dot { fill: #2563eb; stroke: white; stroke-width: 2; }
 @media (max-width: 980px) {
     header { align-items: flex-start; flex-direction: column; padding: 18px 20px; position: static; }
     nav { justify-content: flex-start; }
@@ -661,6 +763,7 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
     .brand-mark { width: 40px; height: 40px; }
     h1 { font-size: 19px; }
     .form-grid, .section-fields, .score-row, .detail-grid, .metrics { grid-template-columns: 1fr; }
+    .trend-summary { grid-template-columns: 1fr; }
     section, .panel { padding: 16px; }
     nav a, nav span { flex: 1 1 auto; justify-content: center; }
 }
@@ -711,13 +814,46 @@ def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
 <fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
 <fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证（姓名、身份证号、手机号）{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
 <div class="actions"><button type="submit">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录已保存，可在历史记录中查看。";btn.textContent="已保存";}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div>`}});</script>'''
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{x}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>本次风险主要影响因素</h3><ul class="factor-list">${{factors}}</ul></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div></div>`}});</script>'''
     return layout("信用评估", body, user)
+
+
+def score_trend(rows: list[sqlite3.Row]) -> str:
+    if not rows:
+        return '<div class="trend-panel"><h2>评分变化趋势</h2><div class="result-empty"><strong>暂无评分趋势</strong><span class="note">保存评估记录后，这里会显示最近信用评分变化。</span></div></div>'
+    recent = list(reversed(rows[:6]))
+    scores = [float(r["credit_score"]) for r in recent]
+    score_text = " → ".join(f"{s:.1f}" for s in scores)
+    if len(scores) < 2:
+        trend_text = "记录不足，继续保存评估后可观察变化"
+    elif scores[-1] > scores[0] + 1:
+        trend_text = "持续提升" if all(scores[i] <= scores[i + 1] for i in range(len(scores) - 1)) else "整体改善"
+    elif scores[-1] < scores[0] - 1:
+        trend_text = "有所下降"
+    else:
+        trend_text = "基本稳定"
+    if len(scores) == 1:
+        points = "24,76"
+        dots = '<circle class="trend-dot" cx="24" cy="76" r="4"></circle>'
+    else:
+        min_s, max_s = min(scores), max(scores)
+        span = max(max_s - min_s, 1.0)
+        pts: list[str] = []
+        dots_list: list[str] = []
+        for i, score in enumerate(scores):
+            x = 24 + i * (252 / (len(scores) - 1))
+            y = 118 - ((score - min_s) / span) * 84
+            pts.append(f"{x:.1f},{y:.1f}")
+            dots_list.append(f'<circle class="trend-dot" cx="{x:.1f}" cy="{y:.1f}" r="4"></circle>')
+        points = " ".join(pts)
+        dots = "".join(dots_list)
+    chart = f'<div class="trend-chart"><svg viewBox="0 0 300 150" role="img" aria-label="信用评分变化折线图"><polyline class="trend-line" points="{points}"></polyline>{dots}</svg></div>'
+    return f'''<div class="trend-panel"><h2>评分变化趋势</h2><div class="trend-summary"><div class="metric">最近评分变化<strong>{score_text}</strong></div><div class="metric">信用趋势<strong>{trend_text}</strong></div></div>{chart}</div>'''
 
 
 def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
     trs = ''.join(f"<tr><td>{esc(r['created_time'])}</td><td>{money(r['requested_loan_amount'])}</td><td>{r['loan_term']} 月</td><td>{esc(r['risk_level'])}</td><td>{r['default_probability']*100:.2f}%</td><td>{r['credit_score']:.2f}</td><td>{money(r['recommended_loan_amount'])}</td></tr>" for r in rows) or '<tr><td colspan="7" class="note">暂无历史评估记录。</td></tr>'
-    return layout("历史记录", f'<section class="panel"><h2>历史评估记录</h2><div class="table-wrap"><table><thead><tr><th>评估时间</th><th>申请金额</th><th>期限</th><th>风险等级</th><th>违约概率</th><th>信用评分</th><th>推荐额度</th></tr></thead><tbody>{trs}</tbody></table></div></section>', user)
+    return layout("历史记录", f'<section class="panel">{score_trend(rows)}<h2>历史评估记录</h2><div class="table-wrap"><table><thead><tr><th>评估时间</th><th>申请金额</th><th>期限</th><th>风险等级</th><th>违约概率</th><th>信用评分</th><th>推荐额度</th></tr></thead><tbody>{trs}</tbody></table></div></section>', user)
 
 class RiskHandler(BaseHTTPRequestHandler):
     def send_body(self, status: int, body: str | bytes, ctype: str = "text/html; charset=utf-8", headers: dict[str, str] | None = None) -> None:
