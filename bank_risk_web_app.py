@@ -394,18 +394,235 @@ def esc(v: Any) -> str: return html.escape(str(v), quote=True)
 def sel(cur: Any, exp: Any) -> str: return " selected" if str(cur) == str(exp) else ""
 def money(v: Any) -> str: return f"¥{fnum(v):,.0f}"
 
+APP_CSS = """
+:root {
+    --ink: #16202a;
+    --muted: #667085;
+    --line: #d9e1e8;
+    --panel: rgba(255, 255, 255, .88);
+    --soft: #f5f7fb;
+    --navy: #111827;
+    --teal: #0f766e;
+    --cyan: #0891b2;
+    --amber: #d97706;
+    --rose: #e11d48;
+    --shadow: 0 18px 42px rgba(15, 23, 42, .12);
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    color: var(--ink);
+    background:
+        radial-gradient(circle at 12% 12%, rgba(8, 145, 178, .14), transparent 28%),
+        radial-gradient(circle at 88% 10%, rgba(217, 119, 6, .12), transparent 25%),
+        linear-gradient(180deg, #f7fafc 0%, #eef3f8 44%, #f8fafc 100%);
+}
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(15, 23, 42, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(15, 23, 42, .035) 1px, transparent 1px);
+    background-size: 34px 34px;
+    mask-image: linear-gradient(180deg, rgba(0,0,0,.75), transparent 72%);
+}
+header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 22px;
+    padding: 18px 36px;
+    color: white;
+    background: linear-gradient(135deg, rgba(17, 24, 39, .96), rgba(15, 118, 110, .92));
+    border-bottom: 1px solid rgba(255, 255, 255, .16);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+}
+.brand { display: flex; align-items: center; gap: 14px; min-width: 260px; }
+.brand-mark {
+    width: 46px;
+    height: 46px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    font-weight: 900;
+    letter-spacing: 0;
+    color: #0b1220;
+    background: linear-gradient(135deg, #f8fafc, #67e8f9);
+    box-shadow: inset 0 -10px 18px rgba(15, 23, 42, .12);
+}
+h1 { margin: 0 0 5px; font-size: 22px; line-height: 1.2; letter-spacing: 0; }
+header p { margin: 0; color: rgba(255, 255, 255, .72); font-size: 13px; }
+nav { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+nav a, nav span {
+    color: white;
+    text-decoration: none;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 7px;
+    padding: 0 12px;
+    font-size: 13px;
+    background: rgba(255, 255, 255, .09);
+    border: 1px solid rgba(255, 255, 255, .12);
+}
+nav span { background: rgba(255, 255, 255, .18); font-weight: 700; }
+nav a:hover { background: rgba(255, 255, 255, .2); }
+main {
+    position: relative;
+    width: min(1440px, 100%);
+    margin: 0 auto;
+    padding: 28px 36px 44px;
+}
+.grid { display: grid; grid-template-columns: minmax(420px, 1.35fr) minmax(330px, .82fr); gap: 22px; align-items: start; }
+section, .panel {
+    background: var(--panel);
+    border: 1px solid rgba(148, 163, 184, .28);
+    border-radius: 8px;
+    padding: 22px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(12px);
+}
+.input-panel { border-top: 4px solid var(--cyan); }
+.result-panel { position: sticky; top: 98px; border-top: 4px solid var(--amber); }
+h2 { margin: 0 0 16px; font-size: 18px; line-height: 1.25; }
+h3 { margin: 14px 0 10px; font-size: 15px; }
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.auth-shell { min-height: calc(100vh - 170px); display: grid; place-items: center; }
+.auth-card { width: min(460px, 100%); }
+.auth-form { display: grid; gap: 16px; }
+label { display: grid; gap: 7px; font-size: 13px; color: #475467; font-weight: 700; }
+input, select {
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    border: 1px solid #cfd8e3;
+    border-radius: 7px;
+    padding: 0 11px;
+    background: rgba(255, 255, 255, .92);
+    color: var(--ink);
+    outline: none;
+    transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+input:focus, select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(8, 145, 178, .16); background: white; }
+button, .button {
+    min-height: 42px;
+    border: 0;
+    border-radius: 7px;
+    background: linear-gradient(135deg, var(--teal), var(--cyan));
+    color: white;
+    font-weight: 800;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 18px;
+    box-shadow: 0 12px 22px rgba(8, 145, 178, .22);
+}
+button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+.actions { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.note { color: var(--muted); font-size: 13px; line-height: 1.65; font-weight: 400; }
+.result { display: grid; gap: 14px; }
+.result-empty {
+    min-height: 164px;
+    display: grid;
+    align-content: center;
+    gap: 10px;
+    padding: 18px;
+    border: 1px dashed #b7c4d1;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(8,145,178,.08), rgba(217,119,6,.08));
+}
+.score-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.score-card {
+    border: 1px solid rgba(148, 163, 184, .24);
+    background: linear-gradient(180deg, #ffffff, #f4f7fb);
+    border-radius: 8px;
+    padding: 16px;
+}
+.score-card span { color: var(--muted); font-size: 13px; }
+.score { margin-top: 7px; font-size: 28px; font-weight: 900; color: #0f172a; letter-spacing: 0; }
+.level {
+    display: inline-flex;
+    width: fit-content;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 7px;
+    background: rgba(15, 118, 110, .12);
+    color: #0f766e;
+    font-weight: 900;
+}
+.detail-block { border-top: 1px solid #e4eaf0; padding-top: 12px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.detail-item {
+    background: #f8fafc;
+    border: 1px solid #e1e8ef;
+    border-radius: 7px;
+    padding: 11px;
+    color: #526071;
+    font-size: 13px;
+}
+.detail-item strong { display: inline-block; margin-top: 4px; color: var(--ink); font-size: 15px; }
+.advice-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.75; }
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.metric {
+    background: #f1f6f8;
+    border: 1px solid #dbe7ee;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 13px;
+    color: #506172;
+}
+.metric strong { display: block; margin-top: 6px; font-size: 19px; color: #0f172a; }
+.flash {
+    margin-bottom: 14px;
+    padding: 11px 13px;
+    background: #fffbeb;
+    border: 1px solid #f5d98c;
+    border-radius: 7px;
+    color: #854d0e;
+}
+.table-wrap { overflow-x: auto; border: 1px solid #e1e8ef; border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; background: white; min-width: 760px; }
+th, td { border-bottom: 1px solid #e1e8ef; padding: 12px 10px; text-align: left; font-size: 13px; }
+th { background: #edf4f7; color: #405060; font-weight: 800; }
+tr:hover td { background: #fafcff; }
+@media (max-width: 980px) {
+    header { align-items: flex-start; flex-direction: column; padding: 18px 20px; position: static; }
+    nav { justify-content: flex-start; }
+    main { padding: 20px; }
+    .grid { grid-template-columns: 1fr; }
+    .result-panel { position: static; }
+    .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+    .brand { align-items: flex-start; min-width: 0; }
+    .brand-mark { width: 40px; height: 40px; }
+    h1 { font-size: 19px; }
+    .form-grid, .score-row, .detail-grid, .metrics { grid-template-columns: 1fr; }
+    section, .panel { padding: 16px; }
+    nav a, nav span { flex: 1 1 auto; justify-content: center; }
+}
+"""
+
 
 def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
     nav = (f'<nav><span>{esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
-    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>
-*{{box-sizing:border-box}}body{{margin:0;font-family:"Microsoft YaHei",Arial,sans-serif;color:#17212b;background:#f4f6f8}}header{{padding:20px 32px;background:#12324a;color:white;border-bottom:4px solid #2c7a7b;display:flex;justify-content:space-between;gap:20px;align-items:center}}h1{{margin:0 0 6px;font-size:24px}}header p{{margin:0;color:#cfe3ef}}nav{{display:flex;gap:14px;flex-wrap:wrap}}nav a,nav span{{color:white;text-decoration:none}}nav a{{border-bottom:1px solid rgba(255,255,255,.45)}}main{{padding:22px 32px}}.grid{{display:grid;grid-template-columns:minmax(360px,1.35fr) minmax(300px,.85fr);gap:20px}}section,.panel{{background:white;border:1px solid #dde3ea;border-radius:8px;padding:18px}}h2{{margin:0 0 14px;font-size:18px}}h3{{margin:12px 0 8px;font-size:15px}}.form-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}}.auth-form{{display:grid;gap:14px;max-width:420px}}label{{display:grid;gap:6px;font-size:13px;color:#435160}}input,select{{width:100%;height:36px;border:1px solid #c9d2dc;border-radius:6px;padding:0 10px;background:white;color:#17212b}}button,.button{{height:40px;border:0;border-radius:6px;background:#216869;color:white;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;padding:0 16px}}button:hover,.button:hover{{background:#174f50}}.actions{{grid-column:1/-1;display:flex;gap:12px;align-items:center;flex-wrap:wrap}}.note{{color:#667486;font-size:13px;line-height:1.6}}.result{{display:grid;gap:12px}}.score-row{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}.score-card{{border:1px solid #dbe3ea;background:#f7fafc;border-radius:8px;padding:14px}}.score-card span{{color:#64748b;font-size:13px}}.score{{margin-top:6px;font-size:24px;font-weight:800;color:#12324a}}.level{{display:inline-block;width:fit-content;padding:7px 10px;border-radius:6px;background:#e6f2ef;color:#185e5f;font-weight:800}}.detail-block{{border-top:1px solid #e5ebf0;padding-top:10px}}.detail-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.detail-item{{background:#f8fafc;border:1px solid #e1e8ef;border-radius:6px;padding:10px;color:#526071;font-size:13px}}.detail-item strong{{color:#17212b;font-size:15px}}.advice-list{{margin:6px 0 0;padding-left:18px;color:#344256;line-height:1.7}}.metrics{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.metric{{background:#eef4f7;border-radius:6px;padding:10px;font-size:13px;color:#506172}}.metric strong{{display:block;margin-top:5px;font-size:18px;color:#12324a}}.flash{{margin-bottom:14px;padding:10px 12px;background:#fff7df;border:1px solid #ead18b;border-radius:6px;color:#6b520f}}table{{width:100%;border-collapse:collapse;background:white}}th,td{{border-bottom:1px solid #e1e8ef;padding:10px;text-align:left;font-size:13px}}th{{background:#f1f5f9;color:#405060}}@media(max-width:900px){{header{{align-items:flex-start;flex-direction:column}}.grid{{grid-template-columns:1fr}}.form-grid{{grid-template-columns:1fr}}}}
-</style></head><body><header><div><h1>银行客户信用风险评估系统</h1><p>个人基础信息保存、自动填充、违约风险预测与贷款额度建议</p></div>{nav}</header><main>{body}</main></body></html>'''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
 
 
 def auth_page(kind: str, msg: str = "") -> str:
     is_reg = kind == "register"; title = "用户注册" if is_reg else "用户登录"; action = "/register" if is_reg else "/login"
     switch = '<a href="/login">已有账号，去登录</a>' if is_reg else '<a href="/register">没有账号，去注册</a>'
-    return layout(title, f'''<section class="panel"><h2>{title}</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="auth-form" method="post" action="{action}"><label>用户名<input name="username" required minlength="3" autocomplete="username"></label><label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password"></label><div class="actions"><button type="submit">{title}</button><span class="note">{switch}</span></div></form></section>''')
+    return layout(title, f'''<div class="auth-shell"><section class="panel auth-card"><h2>{title}</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="auth-form" method="post" action="{action}"><label>用户名<input name="username" required minlength="3" autocomplete="username"></label><label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password"></label><div class="actions"><button type="submit">{title}</button><span class="note">{switch}</span></div></form></section></div>''')
 
 
 def profile_form(p: dict[str, str], msg: str = "") -> str:
@@ -435,19 +652,19 @@ def model_select() -> str:
 
 def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
     v = ASSESSMENT_DEFAULTS.copy(); v.update(profile)
-    body = f'''<div class="grid"><section><h2>信用评估申请信息</h2><form class="form-grid" id="riskForm">
+    body = f'''<div class="grid"><section class="input-panel"><h2>信用评估申请信息</h2><form class="form-grid" id="riskForm">
 <label>评估模型{model_select()}</label><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label>
 <label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label>
 <label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label>
 <label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label>
-<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section><h2>评估结果</h2><div class="result" id="result"><div class="note">提交申请人信息后，这里会显示预测结果。</div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="note">正在评估...</div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="note">评估失败，请重新登录后再试。</div>';return}}const d=await r.json();auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
+<div class="actions"><button type="submit">评估违约风险</button><span class="note">已从个人信息自动填充长期基础字段，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
 def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
     trs = ''.join(f"<tr><td>{esc(r['created_time'])}</td><td>{money(r['requested_loan_amount'])}</td><td>{r['loan_term']} 月</td><td>{esc(r['risk_level'])}</td><td>{r['default_probability']*100:.2f}%</td><td>{r['credit_score']:.2f}</td><td>{money(r['recommended_loan_amount'])}</td></tr>" for r in rows) or '<tr><td colspan="7" class="note">暂无历史评估记录。</td></tr>'
-    return layout("历史记录", f'<section class="panel"><h2>历史评估记录</h2><table><thead><tr><th>评估时间</th><th>申请金额</th><th>期限</th><th>风险等级</th><th>违约概率</th><th>信用评分</th><th>推荐额度</th></tr></thead><tbody>{trs}</tbody></table></section>', user)
+    return layout("历史记录", f'<section class="panel"><h2>历史评估记录</h2><div class="table-wrap"><table><thead><tr><th>评估时间</th><th>申请金额</th><th>期限</th><th>风险等级</th><th>违约概率</th><th>信用评分</th><th>推荐额度</th></tr></thead><tbody>{trs}</tbody></table></div></section>', user)
 
 class RiskHandler(BaseHTTPRequestHandler):
     def send_body(self, status: int, body: str | bytes, ctype: str = "text/html; charset=utf-8", headers: dict[str, str] | None = None) -> None:
