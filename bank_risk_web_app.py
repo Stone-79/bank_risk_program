@@ -26,7 +26,8 @@ SESSIONS: dict[str, int] = {}
 
 PROFILE_DEFAULTS = {
     "age": "35", "employmentYears": "5", "creditHistoryYears": "3",
-    "idVerify": "一致", "threeVerify": "一致", "inCourt": "0", "isBlackList": "0",
+    "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男",
+    "netLength": "24个月以上",
 }
 ASSESSMENT_DEFAULTS = {
     "CityId": "二线城市", "education": "高中", "maritalStatus": "已婚", "sex": "男",
@@ -34,6 +35,7 @@ ASSESSMENT_DEFAULTS = {
     "transTotalCnt": "20", "onlineTransAmt": "1200", "cashTotalAmt": "0", "isDue": "0",
     "monthlyIncome": "10000", "monthlyExpense": "4500", "existingMonthlyRepayment": "1500",
     "requestedAmount": "50000", "loanTerm": "12", "overdueCount": "0", "creditCardUsage": "35",
+    "idVerify": "一致", "threeVerify": "一致", "inCourt": "0", "isBlackList": "0",
 }
 
 RISK_POLICIES = {
@@ -289,6 +291,11 @@ def init_db() -> None:
             age REAL,
             employment_years REAL,
             credit_history_years REAL,
+            city_id TEXT,
+            education TEXT,
+            marital_status TEXT,
+            sex TEXT,
+            net_length TEXT,
             identity_verified TEXT,
             three_factor_verified TEXT,
             court_record INTEGER,
@@ -312,6 +319,16 @@ def init_db() -> None:
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
         """)
+        existing_cols = {row["name"] for row in c.execute("PRAGMA table_info(user_profiles)").fetchall()}
+        for name, ddl in {
+            "city_id": "ALTER TABLE user_profiles ADD COLUMN city_id TEXT",
+            "education": "ALTER TABLE user_profiles ADD COLUMN education TEXT",
+            "marital_status": "ALTER TABLE user_profiles ADD COLUMN marital_status TEXT",
+            "sex": "ALTER TABLE user_profiles ADD COLUMN sex TEXT",
+            "net_length": "ALTER TABLE user_profiles ADD COLUMN net_length TEXT",
+        }.items():
+            if name not in existing_cols:
+                c.execute(ddl)
 
 
 def hash_password(password: str, salt_hex: str | None = None) -> str:
@@ -334,7 +351,7 @@ def create_user(username: str, password: str) -> tuple[bool, str]:
     try:
         with conn() as c:
             cur = c.execute("INSERT INTO users(username,password_hash,created_time) VALUES (?,?,?)", (username, hash_password(password), now))
-            c.execute("INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,identity_verified,three_factor_verified,court_record,blacklist,updated_time) VALUES (?,?,?,?,?,?,?,?,?)", (cur.lastrowid, 35, 5, 3, "一致", "一致", 0, 0, now))
+            c.execute("INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,city_id,education,marital_status,sex,net_length,identity_verified,three_factor_verified,court_record,blacklist,updated_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (cur.lastrowid, 35, 5, 3, "二线城市", "高中", "已婚", "男", "24个月以上", "一致", "一致", 0, 0, now))
         return True, "注册成功，请登录。"
     except sqlite3.IntegrityError:
         return False, "用户名已存在，请换一个。"
@@ -358,8 +375,9 @@ def get_profile(user_id: int) -> dict[str, str]:
             "age": str(row["age"] if row["age"] is not None else p["age"]),
             "employmentYears": str(row["employment_years"] if row["employment_years"] is not None else p["employmentYears"]),
             "creditHistoryYears": str(row["credit_history_years"] if row["credit_history_years"] is not None else p["creditHistoryYears"]),
-            "idVerify": row["identity_verified"] or p["idVerify"], "threeVerify": row["three_factor_verified"] or p["threeVerify"],
-            "inCourt": str(row["court_record"] or 0), "isBlackList": str(row["blacklist"] or 0),
+            "CityId": row["city_id"] or p["CityId"], "education": row["education"] or p["education"],
+            "maritalStatus": row["marital_status"] or p["maritalStatus"], "sex": row["sex"] or p["sex"],
+            "netLength": row["net_length"] or p["netLength"],
         })
     return p
 
@@ -368,13 +386,13 @@ def update_profile(user_id: int, data: dict[str, Any]) -> None:
     d = normalize_form(data); now = datetime.now().isoformat(timespec="seconds")
     with conn() as c:
         c.execute("""
-        INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,identity_verified,three_factor_verified,court_record,blacklist,updated_time)
-        VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT INTO user_profiles(user_id,age,employment_years,credit_history_years,city_id,education,marital_status,sex,net_length,updated_time)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(user_id) DO UPDATE SET age=excluded.age, employment_years=excluded.employment_years,
-        credit_history_years=excluded.credit_history_years, identity_verified=excluded.identity_verified,
-        three_factor_verified=excluded.three_factor_verified, court_record=excluded.court_record,
-        blacklist=excluded.blacklist, updated_time=excluded.updated_time
-        """, (user_id, nonneg(d.get("age"), 35), nonneg(d.get("employmentYears"), 5), nonneg(d.get("creditHistoryYears"), 3), str(d.get("idVerify") or "未知"), str(d.get("threeVerify") or "未知"), int(fnum(d.get("inCourt"))), int(fnum(d.get("isBlackList"))), now))
+        credit_history_years=excluded.credit_history_years, city_id=excluded.city_id,
+        education=excluded.education, marital_status=excluded.marital_status,
+        sex=excluded.sex, net_length=excluded.net_length, updated_time=excluded.updated_time
+        """, (user_id, nonneg(d.get("age"), 35), nonneg(d.get("employmentYears"), 5), nonneg(d.get("creditHistoryYears"), 3), str(d.get("CityId") or "二线城市"), str(d.get("education") or "高中"), str(d.get("maritalStatus") or "已婚"), str(d.get("sex") or "男"), str(d.get("netLength") or "24个月以上"), now))
 
 
 def save_record(user_id: int, result: dict[str, Any]) -> None:
@@ -664,8 +682,7 @@ def auth_page(kind: str, msg: str = "") -> str:
 def profile_form(p: dict[str, str], msg: str = "") -> str:
     return f'''<section class="panel"><h2>个人基础信息</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="form-grid" method="post" action="/profile">
 <label>年龄<input name="age" type="number" min="0" value="{esc(p['age'])}"></label><label>工作年限<input name="employmentYears" type="number" min="0" step="0.5" value="{esc(p['employmentYears'])}"></label><label>信用历史年限<input name="creditHistoryYears" type="number" min="0" step="0.5" value="{esc(p['creditHistoryYears'])}"></label>
-<label>身份验证情况<select name="idVerify"><option{sel(p['idVerify'],'一致')}>一致</option><option{sel(p['idVerify'],'不一致')}>不一致</option><option{sel(p['idVerify'],'未知')}>未知</option></select></label><label>三要素验证情况<select name="threeVerify"><option{sel(p['threeVerify'],'一致')}>一致</option><option{sel(p['threeVerify'],'不一致')}>不一致</option><option{sel(p['threeVerify'],'未知')}>未知</option></select></label>
-<label>是否有法院记录<select name="inCourt"><option value="0"{sel(p['inCourt'],'0')}>否</option><option value="1"{sel(p['inCourt'],'1')}>是</option></select></label><label>是否在黑名单<select name="isBlackList"><option value="0"{sel(p['isBlackList'],'0')}>否</option><option value="1"{sel(p['isBlackList'],'1')}>是</option></select></label><div class="actions"><button type="submit">保存个人信息</button><a class="button" href="/">进入信用评估</a></div></form></section>'''
+<label>城市等级{select_options('CityId',p['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',p['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',p['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',p['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',p['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label><div class="actions"><button type="submit">保存个人信息</button><a class="button" href="/">进入信用评估</a></div></form></section>'''
 
 
 def select_options(name: str, current: str, options: list[str]) -> str:
@@ -689,12 +706,12 @@ def model_select() -> str:
 def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
     v = ASSESSMENT_DEFAULTS.copy(); v.update(profile)
     body = f'''<div class="grid"><section class="input-panel"><h2>贷款申请信息录入</h2><form class="application-form" id="riskForm">
-<fieldset class="form-section"><legend>个人基本信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label><label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label></div></fieldset>
+<fieldset class="form-section"><legend>个人基本信息</legend><div class="section-fields"><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label><label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label></div></fieldset>
 <fieldset class="form-section"><legend>收入与支出信息</legend><div class="section-fields"><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label></div></fieldset>
 <fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
-<fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
+<fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证（姓名、身份证号、手机号）{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
 <div class="actions"><button type="submit">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录已保存，可在历史记录中查看。";btn.textContent="已保存";}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function resetAssessment(){{lastResult=null;result.innerHTML='<div class="result-empty"><strong>等待提交评估</strong><span class="note">修改申请信息后重新提交评估。</span></div>';auc.textContent="-";form.scrollIntoView({{behavior:"smooth",block:"start"}});}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="resetAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div>`}});</script>'''
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录已保存，可在历史记录中查看。";btn.textContent="已保存";}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join("");result.innerHTML=`<div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div></div><div class="score-card"><span>信用评分</span><div class="score">${{d.credit_score}}</div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
