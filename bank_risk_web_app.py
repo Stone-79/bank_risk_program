@@ -26,7 +26,7 @@ SESSION_COOKIE = "bank_risk_session"
 SESSIONS: dict[str, int] = {}
 DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "12"))
+DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "45"))
 DEEPSEEK_KEY_SETTING = "deepseek_api_key"
 
 PROFILE_DEFAULTS = {
@@ -364,6 +364,74 @@ def deepseek_analysis(d: dict[str, Any], prob: float, base: float, adj: float, g
             "ai_analysis_source": "local_template",
             "ai_analysis_note": f"DeepSeek 分析暂不可用，已使用本地规则生成分析：{type(exc).__name__}",
         }
+
+
+def deepseek_risk_qa(payload: dict[str, Any]) -> dict[str, Any]:
+    question = str(payload.get("question", "")).strip()
+    assessment = payload.get("assessment")
+    if not question:
+        return {"ok": False, "answer": "请输入你想咨询的问题。", "source": "local"}
+    if not isinstance(assessment, dict):
+        return {"ok": False, "answer": "请先完成一次风险评估，再使用 AI 风险问答助手。", "source": "local"}
+    api_key, key_source = deepseek_api_key()
+    if not api_key:
+        return {"ok": False, "answer": "未配置 DeepSeek API Key，暂时无法使用 AI 问答。", "source": "local"}
+    context = {
+        "risk_grade": assessment.get("risk_grade"),
+        "level": assessment.get("level"),
+        "suggestion": assessment.get("suggestion"),
+        "probability": assessment.get("probability"),
+        "credit_score": assessment.get("credit_score"),
+        "loan_amount": assessment.get("loan_amount"),
+        "risk_factors": assessment.get("risk_factors"),
+        "improvement_advice": assessment.get("improvement_advice"),
+        "loan_process": assessment.get("loan_process"),
+        "expected_time": assessment.get("expected_time"),
+        "normalized_input": assessment.get("normalized_input"),
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是银行个人信贷风控问答助手。只能基于本次评估结果和客户已填写信息回答，"
+                "不要编造审批承诺、内部政策或未提供的数据。回答要简洁、具体、面向贷款客户。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"本次评估上下文：{json.dumps(context, ensure_ascii=False)}\n"
+                f"客户问题：{question}\n"
+                "请用中文回答，控制在 120 字以内。"
+            ),
+        },
+    ]
+    body = json.dumps({
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 500,
+    }, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        DEEPSEEK_API_URL,
+        data=body,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=DEEPSEEK_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        answer = str(data["choices"][0]["message"]["content"]).strip()
+        return {"ok": True, "answer": answer[:600], "source": f"{DEEPSEEK_MODEL} / {key_source}"}
+    except error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")[:180]
+        except Exception:
+            detail = str(exc)
+        return {"ok": False, "answer": f"AI 问答暂不可用：DeepSeek HTTP {exc.code}。{detail}", "source": "local"}
+    except (error.URLError, TimeoutError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        return {"ok": False, "answer": f"AI 问答暂不可用：{type(exc).__name__}", "source": "local"}
 
 
 
@@ -888,6 +956,34 @@ button:hover, .button:hover { filter: brightness(1.04); transform: translateY(-1
 .detail-item strong { display: inline-block; margin-top: 4px; color: var(--ink); font-size: 15px; }
 .advice-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.75; }
 .factor-list { margin: 6px 0 0; padding-left: 18px; color: #344256; line-height: 1.7; }
+.result-details summary {
+    cursor: pointer;
+    font-weight: 900;
+    color: var(--ink);
+    list-style-position: outside;
+}
+.result-details[open] summary { margin-bottom: 8px; }
+.qa-box { display: grid; gap: 10px; }
+.qa-input {
+    min-height: 76px;
+    resize: vertical;
+    border: 1px solid #d6e0ea;
+    border-radius: 7px;
+    padding: 10px 11px;
+    font: inherit;
+    color: var(--ink);
+    background: rgba(255, 255, 255, .82);
+}
+.qa-answer {
+    min-height: 42px;
+    padding: 10px 11px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, .48);
+    border: 1px solid rgba(255, 255, 255, .42);
+    color: #344256;
+    line-height: 1.7;
+    white-space: pre-wrap;
+}
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .metric {
     background: rgba(255, 255, 255, .46);
@@ -1001,8 +1097,8 @@ def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
 <fieldset class="form-section"><legend>收入与支出信息</legend><div class="section-fields"><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label></div></fieldset>
 <fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
 <fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证（姓名、身份证号、手机号）{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
-<div class="actions"><button type="submit">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const htmlEsc=s=>String(s).replace(/[&<>"']/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div><strong>使用模型：</strong>${{htmlEsc(d.model_label)}}</div><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{htmlEsc(d.level)}}</div><div><strong>审批建议：</strong>${{htmlEsc(d.suggestion)}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{htmlEsc(a.amount_comment)}}</strong></div></div></div><div class="detail-block"><h3>本次风险主要影响因素</h3><ul class="factor-list">${{factors}}</ul></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul><div class="note">大模型分析状态：${{htmlEsc(d.ai_analysis_note||"未返回状态信息")}}</div></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{htmlEsc(d.loan_process)}}</div><div><strong>${{htmlEsc(d.expected_time)}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div></div>`}});</script>'''
+<div class="actions"><button type="submit">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div></section></div>
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const htmlEsc=s=>String(s).replace(/[&<>"']/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}async function askRiskAssistant(){{const input=document.getElementById("riskQuestion"),answer=document.getElementById("riskAnswer"),btn=document.getElementById("riskAskBtn");const question=(input?.value||"").trim();if(!question){{answer.textContent="请输入问题后再咨询。";return}}if(!lastResult){{answer.textContent="请先完成一次风险评估。";return}}btn.disabled=true;answer.textContent="AI 正在分析...";const r=await fetch("/ai_qa",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{question,assessment:lastResult}})}});if(!r.ok){{answer.textContent="问答失败，请重新登录后再试。";btn.disabled=false;return}}const d=await r.json();answer.textContent=d.answer||"未返回回答。";btn.disabled=false;}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率、推荐额度和大模型解释。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{htmlEsc(d.level)}}</div><div><strong>审批建议：</strong>${{htmlEsc(d.suggestion)}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{htmlEsc(a.amount_comment)}}</strong></div></div></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="detail-grid"><div class="detail-item">预计流程<br><strong>${{htmlEsc(d.loan_process)}}</strong></div><div class="detail-item">预计到账<br><strong>${{htmlEsc(d.expected_time)}}</strong></div></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div><div class="note">大模型分析状态：${{htmlEsc(d.ai_analysis_note||"未返回状态信息")}}</div></div><details class="detail-block result-details"><summary>本次风险主要影响因素</summary><ul class="factor-list">${{factors}}</ul></details><details class="detail-block result-details"><summary>信用提升建议</summary><ul class="advice-list">${{items}}</ul></details><details class="detail-block result-details"><summary>AI 风险问答助手</summary><div class="qa-box"><textarea class="qa-input" id="riskQuestion" placeholder="例如：我应该先降低申请金额，还是先减少已有负债？"></textarea><div class="result-actions"><button type="button" id="riskAskBtn" onclick="askRiskAssistant()">咨询 AI</button></div><div class="qa-answer" id="riskAnswer">可围绕本次风险结果继续提问。</div></div></details><details class="detail-block result-details"><summary>模型说明</summary><div class="detail-grid"><div class="detail-item">使用模型<br><strong>${{htmlEsc(d.model_label)}}</strong></div><div class="detail-item">模型区分能力<br><strong>${{htmlEsc(d.auc)}}</strong></div></div><div class="note">${{htmlEsc(d.model_recommendation_reason||"")}}</div></details></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
@@ -1122,6 +1218,9 @@ class RiskHandler(BaseHTTPRequestHandler):
             self.send_body(200, layout("大模型配置", ai_config_page("请输入 DeepSeek API Key 后再保存。"), user)); return
         if path == "/predict":
             result = predict_risk(self.json_data())
+            self.send_body(200, json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8"); return
+        if path == "/ai_qa":
+            result = deepseek_risk_qa(self.json_data())
             self.send_body(200, json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8"); return
         if path == "/save_record":
             save_record(user["id"], self.json_data())
