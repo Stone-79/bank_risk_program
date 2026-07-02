@@ -1,11 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-import argparse, hashlib, hmac, html, json, secrets, sqlite3
+import argparse, hashlib, hmac, html, json, os, secrets, sqlite3
 from datetime import datetime
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib import error, request
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
@@ -23,6 +24,10 @@ DATA_PATH = BASE_DIR / "源代码" / "data" / "bankriskinfo.csv"
 DB_PATH = BASE_DIR / "bank_risk_users.db"
 SESSION_COOKIE = "bank_risk_session"
 SESSIONS: dict[str, int] = {}
+DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "12"))
+DEEPSEEK_KEY_SETTING = "deepseek_api_key"
 
 PROFILE_DEFAULTS = {
     "age": "35", "employmentYears": "5", "creditHistoryYears": "3",
@@ -236,6 +241,131 @@ def risk_factors(d: dict[str, Any], prob: float, adj: float, grade: str) -> list
     return factors[:5]
 
 
+def analysis_input_summary(d: dict[str, Any], prob: float, base: float, adj: float, grade: str, amount: dict[str, Any], model_label: str) -> dict[str, Any]:
+    income, expense, debt = nonneg(d.get("monthlyIncome")), nonneg(d.get("monthlyExpense")), nonneg(d.get("existingMonthlyRepayment"))
+    requested, term = nonneg(d.get("requestedAmount")), posint(d.get("loanTerm"), 12)
+    disposable = income - expense - debt
+    return {
+        "模型": model_label,
+        "模型基础违约概率": round(base, 4),
+        "业务规则修正": round(adj, 4),
+        "最终违约概率": round(prob, 4),
+        "风险等级": grade,
+        "信用评分": round(100 - prob * 100, 2),
+        "年龄": nonneg(d.get("age")),
+        "工作年限": nonneg(d.get("employmentYears")),
+        "信用历史年限": nonneg(d.get("creditHistoryYears")),
+        "城市等级": str(d.get("CityId", "")),
+        "学历": str(d.get("education", "")),
+        "婚姻状态": str(d.get("maritalStatus", "")),
+        "月收入": round(income, 2),
+        "月支出": round(expense, 2),
+        "已有月还款金额": round(debt, 2),
+        "可支配月收入": round(disposable, 2),
+        "负债收入比": round(debt / income, 4) if income > 0 else None,
+        "支出收入比": round(expense / income, 4) if income > 0 else None,
+        "申请贷款金额": round(requested, 2),
+        "贷款期限（月）": term,
+        "申请折算月均压力": round(requested / term, 2) if term > 0 else 0,
+        "推荐可贷款额度": amount.get("recommended_amount"),
+        "金额判断": amount.get("amount_comment"),
+        "历史逾期次数": nonneg(d.get("overdueCount")),
+        "信用卡使用率": pct(d.get("creditCardUsage")),
+        "身份验证": str(d.get("idVerify", "")),
+        "三要素验证": str(d.get("threeVerify", "")),
+        "是否有法院记录": "是" if fnum(d.get("inCourt")) > 0 else "否",
+        "是否在黑名单": "是" if fnum(d.get("isBlackList")) > 0 else "否",
+        "是否当前逾期": "是" if fnum(d.get("isDue")) > 0 else "否",
+    }
+
+
+def clean_llm_list(values: Any, fallback: list[str], limit: int = 5) -> list[str]:
+    if not isinstance(values, list):
+        return fallback[:limit]
+    cleaned: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text:
+            cleaned.append(text[:180])
+    return (cleaned or fallback)[:limit]
+
+
+def deepseek_analysis(d: dict[str, Any], prob: float, base: float, adj: float, grade: str, amount: dict[str, Any], model_label: str) -> dict[str, Any]:
+    fallback_factors = risk_factors(d, prob, adj, grade)
+    fallback_advice = improvement_advice(d, grade)
+    api_key, key_source = deepseek_api_key()
+    if not api_key:
+        return {
+            "risk_factors": fallback_factors,
+            "improvement_advice": fallback_advice,
+            "ai_analysis_source": "local_template",
+            "ai_analysis_note": "未配置 DeepSeek API Key，已使用本地规则生成分析。",
+        }
+    summary = analysis_input_summary(d, prob, base, adj, grade, amount, model_label)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是银行个人信贷风控分析助手。请只根据用户提交的数据、模型概率、风险等级和额度测算结果分析，"
+                "不要编造未提供的信息，不要输出营销话术。输出必须是 JSON 对象。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请为本次贷款申请生成个性化分析。JSON 格式固定为："
+                '{"risk_factors":["..."],"improvement_advice":["..."]}。'
+                "risk_factors 写 3-5 条本次风险主要影响因素，必须点名具体指标或数值；"
+                "improvement_advice 写 3-5 条信用提升建议，必须针对客户当前填写的信息，避免固定模板。"
+                f"\n客户与模型数据：{json.dumps(summary, ensure_ascii=False)}"
+            ),
+        },
+    ]
+    payload = json.dumps({
+        "model": DEEPSEEK_MODEL,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 700,
+        "response_format": {"type": "json_object"},
+    }, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        DEEPSEEK_API_URL,
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=DEEPSEEK_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8")
+        body = json.loads(raw)
+        content = body["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return {
+            "risk_factors": clean_llm_list(parsed.get("risk_factors"), fallback_factors),
+            "improvement_advice": clean_llm_list(parsed.get("improvement_advice"), fallback_advice),
+            "ai_analysis_source": "deepseek",
+            "ai_analysis_note": f"由 {DEEPSEEK_MODEL} 根据本次填写信息生成，Key 来源：{key_source}。",
+        }
+    except error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")[:240]
+        except Exception:
+            detail = str(exc)
+        return {
+            "risk_factors": fallback_factors,
+            "improvement_advice": fallback_advice,
+            "ai_analysis_source": "local_template",
+            "ai_analysis_note": f"DeepSeek HTTP {exc.code}，已使用本地规则：{detail}",
+        }
+    except (error.URLError, TimeoutError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        return {
+            "risk_factors": fallback_factors,
+            "improvement_advice": fallback_advice,
+            "ai_analysis_source": "local_template",
+            "ai_analysis_note": f"DeepSeek 分析暂不可用，已使用本地规则生成分析：{type(exc).__name__}",
+        }
+
+
 
 def recommend_model(form_data: dict[str, Any]) -> tuple[str, str]:
     idv = str(form_data.get("idVerify", "")).strip()
@@ -290,6 +420,7 @@ def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
     grade = grade_from_probability(prob)
     level, suggestion, coef, process, expected_time = RISK_POLICIES[grade]
     amount = loan_amount_advice(form_data, coef)
+    ai_analysis = deepseek_analysis(form_data, prob, base, adj, grade, amount, MODEL_LABELS[model_key])
     return {
         "probability": round(prob, 4), "base_probability": round(base, 4), "business_adjustment": round(adj, 4),
         "percentage": f"{prob * 100:.2f}%", "credit_score": round(100 - prob * 100, 2),
@@ -297,13 +428,51 @@ def predict_risk(form_data: dict[str, Any]) -> dict[str, Any]:
         "model_key": model_key, "model_label": MODEL_LABELS[model_key],
         "recommended_model_key": recommended_key, "recommended_model_label": MODEL_LABELS[recommended_key],
         "model_auto_selected": auto_selected, "model_recommendation_reason": recommendation_reason,
-        "improvement_advice": improvement_advice(form_data, grade), "risk_factors": risk_factors(form_data, prob, adj, grade), "loan_process": process,
+        "improvement_advice": ai_analysis["improvement_advice"], "risk_factors": ai_analysis["risk_factors"],
+        "ai_analysis_source": ai_analysis["ai_analysis_source"], "ai_analysis_note": ai_analysis["ai_analysis_note"], "loan_process": process,
         "expected_time": expected_time, "auc": round(MODEL_AUCS[model_key], 4), "normalized_input": form_data,
     }
 
 
 def conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row; return c
+
+
+def get_app_setting(key: str, default: str = "") -> str:
+    try:
+        with conn() as c:
+            row = c.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+            return str(row["value"]) if row else default
+    except sqlite3.OperationalError:
+        return default
+
+
+def set_app_setting(key: str, value: str) -> None:
+    with conn() as c:
+        c.execute(
+            "INSERT INTO app_settings(key,value,updated_time) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_time=excluded.updated_time",
+            (key, value, datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def deepseek_api_key() -> tuple[str, str]:
+    env_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if env_key:
+        return env_key, "环境变量"
+    db_key = get_app_setting(DEEPSEEK_KEY_SETTING, "").strip()
+    if db_key:
+        return db_key, "系统配置"
+    return "", "未配置"
+
+
+def mask_secret(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return "未配置"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * max(len(value) - 8, 4)}{value[-4:]}"
 
 
 def init_db() -> None:
@@ -346,6 +515,11 @@ def init_db() -> None:
             recommended_loan_amount REAL,
             created_time TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_time TEXT NOT NULL
         );
         """)
         existing_cols = {row["name"] for row in c.execute("PRAGMA table_info(user_profiles)").fetchall()}
@@ -771,7 +945,7 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
 
 
 def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
-    nav = (f'<nav><span>用户 {esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
+    nav = (f'<nav><span>用户 {esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/ai_config">大模型配置</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
     body_class = "app-page" if user else "auth-page"
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body class="{body_class}"><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
 
@@ -786,6 +960,20 @@ def profile_form(p: dict[str, str], msg: str = "") -> str:
     return f'''<section class="panel"><h2>个人基础信息</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="form-grid" method="post" action="/profile">
 <label>年龄<input name="age" type="number" min="0" value="{esc(p['age'])}"></label><label>工作年限<input name="employmentYears" type="number" min="0" step="0.5" value="{esc(p['employmentYears'])}"></label><label>信用历史年限<input name="creditHistoryYears" type="number" min="0" step="0.5" value="{esc(p['creditHistoryYears'])}"></label>
 <label>城市等级{select_options('CityId',p['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',p['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',p['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',p['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',p['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label><div class="actions"><button type="submit">保存个人信息</button><a class="button" href="/">进入信用评估</a></div></form></section>'''
+
+
+def ai_config_page(msg: str = "") -> str:
+    key, source = deepseek_api_key()
+    status = "已配置" if key else "未配置"
+    masked = mask_secret(key)
+    return f'''<section class="panel"><h2>大模型配置</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}
+<div class="metrics"><div class="metric">DeepSeek Key 状态<strong>{esc(status)}</strong></div><div class="metric">Key 来源<strong>{esc(source)}</strong></div></div>
+<form class="form-grid" method="post" action="/ai_config">
+<label>DeepSeek API Key<input name="deepseek_api_key" type="password" placeholder="粘贴 sk- 开头的 DeepSeek API Key" autocomplete="off"></label>
+<label>当前 Key<input value="{esc(masked)}" disabled></label>
+<div class="actions"><button type="submit">保存配置</button><button type="submit" name="clear_key" value="1" class="button secondary">清空系统配置</button><a class="button secondary" href="/">返回评估</a></div>
+</form>
+<p class="note">保存后立即生效，不需要重启系统。若同时设置了环境变量 DEEPSEEK_API_KEY，系统会优先使用环境变量。</p></section>'''
 
 
 def select_options(name: str, current: str, options: list[str]) -> str:
@@ -814,7 +1002,7 @@ def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
 <fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
 <fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证（姓名、身份证号、手机号）{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
 <div class="actions"><button type="submit">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div><div class="metrics"><div class="metric">模型区分能力<strong id="auc">-</strong><span class="note">数值越高，说明模型越能区分高低风险客户</span></div><div class="metric">当前模型<strong id="modelNameDisplay">梯度提升模型</strong></div></div></section></div>
-<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{x}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{x}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div><strong>使用模型：</strong>${{d.model_label}}</div><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{d.level}}</div><div><strong>审批建议：</strong>${{d.suggestion}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{a.amount_comment}}</strong></div></div></div><div class="detail-block"><h3>本次风险主要影响因素</h3><ul class="factor-list">${{factors}}</ul></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{d.loan_process}}</div><div><strong>${{d.expected_time}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div></div>`}});</script>'''
+<script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),auc=document.getElementById("auc");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const htmlEsc=s=>String(s).replace(/[&<>"']/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}form.addEventListener("submit",async e=>{{e.preventDefault();const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率和推荐额度。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;auc.textContent=d.auc;document.getElementById("modelNameDisplay").textContent=d.model_label;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div><strong>使用模型：</strong>${{htmlEsc(d.model_label)}}</div><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{htmlEsc(d.level)}}</div><div><strong>审批建议：</strong>${{htmlEsc(d.suggestion)}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{htmlEsc(a.amount_comment)}}</strong></div></div></div><div class="detail-block"><h3>本次风险主要影响因素</h3><ul class="factor-list">${{factors}}</ul></div><div class="detail-block"><h3>信用提升建议</h3><ul class="advice-list">${{items}}</ul><div class="note">大模型分析状态：${{htmlEsc(d.ai_analysis_note||"未返回状态信息")}}</div></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="note">${{htmlEsc(d.loan_process)}}</div><div><strong>${{htmlEsc(d.expected_time)}}</strong></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div></div></div>`}});</script>'''
     return layout("信用评估", body, user)
 
 
@@ -904,6 +1092,7 @@ class RiskHandler(BaseHTTPRequestHandler):
         if path == "/": self.send_body(200, index_page(user, get_profile(user["id"]))); return
         if path == "/profile": self.send_body(200, layout("个人信息", profile_form(get_profile(user["id"])), user)); return
         if path == "/history": self.send_body(200, history_page(user, history(user["id"]))); return
+        if path == "/ai_config": self.send_body(200, layout("大模型配置", ai_config_page(), user)); return
         self.send_body(404, "Not Found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:
@@ -921,6 +1110,16 @@ class RiskHandler(BaseHTTPRequestHandler):
         if path == "/profile":
             update_profile(user["id"], self.form_data())
             self.send_body(200, layout("个人信息", profile_form(get_profile(user["id"]), "个人信息已保存。"), user)); return
+        if path == "/ai_config":
+            data = self.form_data()
+            if data.get("clear_key") == "1":
+                set_app_setting(DEEPSEEK_KEY_SETTING, "")
+                self.send_body(200, layout("大模型配置", ai_config_page("已清空系统保存的 DeepSeek API Key。"), user)); return
+            key = data.get("deepseek_api_key", "").strip()
+            if key:
+                set_app_setting(DEEPSEEK_KEY_SETTING, key)
+                self.send_body(200, layout("大模型配置", ai_config_page("DeepSeek API Key 已保存，后续评估将直接调用大模型。"), user)); return
+            self.send_body(200, layout("大模型配置", ai_config_page("请输入 DeepSeek API Key 后再保存。"), user)); return
         if path == "/predict":
             result = predict_risk(self.json_data())
             self.send_body(200, json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8"); return
