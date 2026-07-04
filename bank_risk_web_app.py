@@ -1272,19 +1272,15 @@ def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
             try:
                 data = json.loads(raw)
                 return f'''<details class="record-details"><summary>查看详情</summary><div class="detail-grid">
-<div class="detail-item">申请金额<br><strong>{money(row["requested_loan_amount"])}</strong></div>
 <div class="detail-item">推荐额度<br><strong>{money(row["recommended_loan_amount"])}</strong></div>
 <div class="detail-item">贷款期限<br><strong>{row["loan_term"]} 月</strong></div>
 <div class="detail-item">风险等级<br><strong>{esc(row["risk_level"])}</strong></div>
-<div class="detail-item">可支配月收入<br><strong>{money(data.get("loan_amount", {}).get("disposable_income", 0))}</strong></div>
 <div class="detail-item">审批建议<br><strong>{esc(data.get("suggestion", ""))}</strong></div>
-<div class="detail-item">预计流程<br><strong>{esc(data.get("loan_process", ""))}</strong></div>
 <div class="detail-item">预计到账<br><strong>{esc(data.get("expected_time", ""))}</strong></div>
 </div></details>'''
             except (TypeError, json.JSONDecodeError):
                 pass
         return f'''<details class="record-details"><summary>查看详情</summary><div class="detail-grid">
-<div class="detail-item">申请金额<br><strong>{money(row["requested_loan_amount"])}</strong></div>
 <div class="detail-item">推荐额度<br><strong>{money(row["recommended_loan_amount"])}</strong></div>
 <div class="detail-item">贷款期限<br><strong>{row["loan_term"]} 月</strong></div>
 <div class="detail-item">风险等级<br><strong>{esc(row["risk_level"])}</strong></div>
@@ -1301,12 +1297,12 @@ def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
         grouped_records = []
         for day, day_rows in groups.items():
             trs = ''.join(
-                f"<tr><td>{esc(str(r['created_time']).split('T', 1)[-1])}</td><td>{r['credit_score']:.2f}</td><td>{r['default_probability']*100:.2f}%</td><td>{detail(r)}</td></tr>"
+                f"<tr><td>{esc(str(r['created_time']).split('T', 1)[-1])}</td><td>{money(r['requested_loan_amount'])}</td><td>{r['credit_score']:.2f}</td><td>{r['default_probability']*100:.2f}%</td><td>{detail(r)}</td></tr>"
                 for r in day_rows
             )
             grouped_records.append(
                 f'''<details class="history-day"><summary>{esc(day)}（{len(day_rows)} 条）</summary>
-<div class="table-wrap"><table><thead><tr><th>时间</th><th>信用评分</th><th>违约概率</th><th>详情</th></tr></thead><tbody>{trs}</tbody></table></div></details>'''
+<div class="table-wrap"><table><thead><tr><th>时间</th><th>申请金额</th><th>信用评分</th><th>违约概率</th><th>详情</th></tr></thead><tbody>{trs}</tbody></table></div></details>'''
             )
         records_html = "".join(grouped_records)
     else:
