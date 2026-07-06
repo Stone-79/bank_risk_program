@@ -585,6 +585,8 @@ def init_db() -> None:
             risk_level TEXT,
             recommended_loan_amount REAL,
             created_time TEXT NOT NULL,
+            is_archived INTEGER NOT NULL DEFAULT 0,
+            archived_time TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -611,6 +613,8 @@ def init_db() -> None:
             "overdue_count": "ALTER TABLE assessment_records ADD COLUMN overdue_count REAL",
             "credit_card_usage": "ALTER TABLE assessment_records ADD COLUMN credit_card_usage REAL",
             "assessment_json": "ALTER TABLE assessment_records ADD COLUMN assessment_json TEXT",
+            "is_archived": "ALTER TABLE assessment_records ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+            "archived_time": "ALTER TABLE assessment_records ADD COLUMN archived_time TEXT",
         }.items():
             if name not in record_cols:
                 c.execute(ddl)
@@ -713,6 +717,10 @@ def money(v: Any) -> str: return f"¥{fnum(v):,.0f}"
 
 def row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
     return row[key] if key in row.keys() else default
+
+
+def customer_no(value: Any) -> str:
+    return f"C{posint(value, 0):04d}"
 
 APP_CSS = """
 :root {
@@ -1136,7 +1144,7 @@ body.admin-page {
 
 
 def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
-    nav = (f'<nav><span>用户 {esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/ai_config">大模型配置</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
+    nav = (f'<nav><span>客户编号 {customer_no(user["id"])}</span><span>用户 {esc(user["username"])}</span><a href="/">信用评估</a><a href="/profile">个人信息</a><a href="/history">历史记录</a><a href="/ai_config">大模型配置</a><a href="/logout">退出</a></nav>' if user else '<nav><a href="/login">登录</a><a href="/register">注册</a></nav>')
     body_class = "app-page" if user else "auth-page"
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head><body class="{body_class}"><header><div class="brand"><div class="brand-mark">Risk</div><div><h1>银行客户信用风险评估系统</h1><p>智能模型推荐、额度测算与风险解释一体化工作台</p></div></div>{nav}</header><main>{body}</main></body></html>'''
 
@@ -1390,6 +1398,8 @@ def assessment_suggestion(row: sqlite3.Row) -> str:
 def admin_records(params: dict[str, str] | None = None) -> list[sqlite3.Row]:
     params = params or {}
     order = "ASC" if params.get("sort") == "oldest" else "DESC"
+    status = params.get("status", "active")
+    status_where = "COALESCE(r.is_archived, 0) = 1" if status == "archived" else "1=1" if status == "all" else "COALESCE(r.is_archived, 0) = 0"
     with conn() as c:
         rows = c.execute(f"""
         SELECT r.*, u.username, u.created_time AS user_created_time, u.account_status,
@@ -1398,6 +1408,7 @@ def admin_records(params: dict[str, str] | None = None) -> list[sqlite3.Row]:
         FROM assessment_records r
         JOIN users u ON u.id = r.user_id
         LEFT JOIN user_profiles p ON p.user_id = u.id
+        WHERE {status_where}
         ORDER BY r.created_time {order}, r.id {order}
         """).fetchall()
     keyword = params.get("q", "").strip().lower()
@@ -1420,7 +1431,7 @@ def admin_customers(keyword: str = "") -> list[sqlite3.Row]:
                MAX(r.created_time) AS last_apply_time
         FROM users u
         LEFT JOIN user_profiles p ON p.user_id = u.id
-        LEFT JOIN assessment_records r ON r.user_id = u.id
+        LEFT JOIN assessment_records r ON r.user_id = u.id AND COALESCE(r.is_archived, 0) = 0
         GROUP BY u.id
         ORDER BY COALESCE(MAX(r.created_time), u.created_time) DESC
         """).fetchall()
@@ -1432,12 +1443,12 @@ def admin_customers(keyword: str = "") -> list[sqlite3.Row]:
 
 def customer_history(user_id: int) -> list[sqlite3.Row]:
     with conn() as c:
-        return c.execute("SELECT * FROM assessment_records WHERE user_id=? ORDER BY created_time DESC,id DESC", (user_id,)).fetchall()
+        return c.execute("SELECT * FROM assessment_records WHERE user_id=? AND COALESCE(is_archived,0)=0 ORDER BY created_time DESC,id DESC", (user_id,)).fetchall()
 
 
-def delete_record(record_id: int) -> None:
+def archive_record(record_id: int) -> None:
     with conn() as c:
-        c.execute("DELETE FROM assessment_records WHERE id=?", (record_id,))
+        c.execute("UPDATE assessment_records SET is_archived=1, archived_time=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), record_id))
 
 
 def toggle_user_status(user_id: int) -> None:
@@ -1476,7 +1487,7 @@ def admin_dashboard_page() -> str:
     suggestion_options = "".join(f'<option>{esc(s)}：{count} 条</option>' for s, count in suggestion_counts.items()) or '<option>暂无数据</option>'
     grade_options = "".join(f'<option value="{g}">{g}级：{grade_counts[g]} 人</option>' for g in ["A", "B", "C", "D", "E"])
     dist_rows = "".join(f"<tr><td>{g}级</td><td>{grade_counts[g]}</td><td>{(grade_counts[g] / total * 100 if total else 0):.1f}%</td></tr>" for g in ["A", "B", "C", "D", "E"])
-    recent_rows = "".join(f"<tr><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td></tr>" for r in rows[:5])
+    recent_rows = "".join(f"<tr><td>{customer_no(r['user_id'])}</td><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td></tr>" for r in rows[:5])
     content = f'''<section class="panel admin-panel"><h2>首页概览</h2><div class="admin-cards">
 <div class="admin-card"><span>累计申请数量</span><strong>{total}</strong></div>
 <div class="admin-card"><span>今日申请数量</span><strong>{today_count}</strong></div>
@@ -1485,7 +1496,7 @@ def admin_dashboard_page() -> str:
 <div class="admin-card"><span>平均信用评分</span><strong>{avg_score:.2f}</strong></div>
 <div class="admin-card"><span>不同审批建议数量</span><select>{suggestion_options}</select></div></div>
 <div class="admin-grid"><div><h2>风险等级分布</h2><div class="table-wrap"><table><thead><tr><th>风险等级</th><th>数量</th><th>占比</th></tr></thead><tbody>{dist_rows}</tbody></table></div></div>
-<div><h2>最近申请记录</h2><div class="table-wrap"><table><thead><tr><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th></tr></thead><tbody>{recent_rows or '<tr><td colspan="7">暂无申请记录</td></tr>'}</tbody></table></div></div></div></section>'''
+<div><h2>最近申请记录</h2><div class="table-wrap"><table><thead><tr><th>客户编号</th><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th></tr></thead><tbody>{recent_rows or '<tr><td colspan="8">暂无申请记录</td></tr>'}</tbody></table></div></div></div></section>'''
     return admin_layout("管理员后台", "home", content)
 
 
@@ -1498,7 +1509,7 @@ def admin_record_detail(row: sqlite3.Row) -> str:
     overdue_count = 0 if overdue_count in (None, "") else overdue_count
     credit_usage = 0 if credit_usage in (None, "") else credit_usage
     return f'''<details class="admin-detail"><summary>查看详情</summary><div class="detail-grid">
-<div class="detail-item">用户名<br><strong>{esc(applicant_name(row))}</strong></div><div class="detail-item">年龄<br><strong>{esc(n.get("age") or row_get(row, "age", ""))}</strong></div>
+<div class="detail-item">客户编号<br><strong>{customer_no(row["user_id"])}</strong></div><div class="detail-item">用户名<br><strong>{esc(applicant_name(row))}</strong></div><div class="detail-item">年龄<br><strong>{esc(n.get("age") or row_get(row, "age", ""))}</strong></div>
 <div class="detail-item">月收入<br><strong>{money(row["monthly_income"])}</strong></div>
 <div class="detail-item">月支出<br><strong>{money(row["monthly_expense"])}</strong></div><div class="detail-item">已有月还款金额<br><strong>{money(row["existing_monthly_debt"])}</strong></div>
 <div class="detail-item">贷款期限<br><strong>{esc(row["loan_term"])} 月</strong></div><div class="detail-item">申请金额<br><strong>{money(row["requested_loan_amount"])}</strong></div>
@@ -1515,13 +1526,19 @@ def admin_record_detail(row: sqlite3.Row) -> str:
 def admin_records_page(params: dict[str, str]) -> str:
     rows = admin_records(params)
     selected = lambda key, val: " selected" if params.get(key, "") == val else ""
-    trs = "".join(f'''<tr><td>{r["id"]}</td><td>{esc(applicant_name(r))}</td><td>{esc(row_assessment(r).get("normalized_input", {}).get("age") or row_get(r, "age", ""))}</td><td>{money(float(r["monthly_income"] or 0)*12)}</td><td>{money(r["requested_loan_amount"])}</td><td>{money(r["existing_monthly_debt"])}</td><td>{float(r["default_probability"])*100:.2f}%</td><td>{float(r["credit_score"]):.2f}</td><td>{esc(r["risk_level"])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r["created_time"])}</td><td>{admin_record_detail(r)}<form method="post" action="/admin/delete_record" onsubmit="return confirm('确认删除这条申请记录吗？');"><input type="hidden" name="record_id" value="{r["id"]}"><button class="small-button danger-button" type="submit">删除记录</button></form></td></tr>''' for r in rows)
+    def row_actions(r: sqlite3.Row) -> str:
+        archived = int(row_get(r, "is_archived", 0) or 0) == 1
+        status_badge = f'<span class="status-badge">已归档{("：" + esc(row_get(r, "archived_time", ""))) if row_get(r, "archived_time", "") else ""}</span>' if archived else '<span class="status-badge">正常</span>'
+        archive_form = "" if archived else f'''<form method="post" action="/admin/archive_record" onsubmit="return confirm('确认将这条申请记录归档吗？归档后默认列表和统计不再展示，但数据库仍保留用于追溯。');"><input type="hidden" name="record_id" value="{r["id"]}"><button class="small-button danger-button" type="submit">归档记录</button></form>'''
+        return f'{status_badge}{admin_record_detail(r)}{archive_form}'
+    trs = "".join(f'''<tr><td>{r["id"]}</td><td>{customer_no(r["user_id"])}</td><td>{esc(applicant_name(r))}</td><td>{esc(row_assessment(r).get("normalized_input", {}).get("age") or row_get(r, "age", ""))}</td><td>{money(float(r["monthly_income"] or 0)*12)}</td><td>{money(r["requested_loan_amount"])}</td><td>{money(r["existing_monthly_debt"])}</td><td>{float(r["default_probability"])*100:.2f}%</td><td>{float(r["credit_score"]):.2f}</td><td>{esc(r["risk_level"])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r["created_time"])}</td><td>{row_actions(r)}</td></tr>''' for r in rows)
     content = f'''<section class="panel admin-panel"><h2>申请记录管理</h2><form class="filter-form" method="get" action="/admin/records">
 <label>用户名<input name="q" value="{esc(params.get("q", ""))}" placeholder="按用户名搜索"></label><label>风险等级<select name="grade"><option value="">全部</option>{''.join(f'<option value="{g}"{selected("grade", g)}>{g}级</option>' for g in ["A","B","C","D","E"])}</select></label>
 <label>审批建议<select name="suggestion"><option value="">全部</option>{''.join(f'<option{selected("suggestion", p)}>{p}</option>' for p in ["可直接通过","可放贷","人工审核","降低额度或提高利率","建议拒贷"])}</select></label>
+<label>记录状态<select name="status"><option value="active"{selected("status","active")}>正常记录</option><option value="archived"{selected("status","archived")}>已归档记录</option><option value="all"{selected("status","all")}>全部记录</option></select></label>
 <label>申请时间排序<select name="sort"><option value="latest"{selected("sort","latest")}>最新优先</option><option value="oldest"{selected("sort","oldest")}>最早优先</option></select></label>
 <button type="submit">筛选</button><a class="button secondary" href="/admin/records">重置筛选</a></form>
-<div class="table-wrap"><table><thead><tr><th>记录编号</th><th>用户名</th><th>年龄</th><th>年收入</th><th>申请金额</th><th>已有负债</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>操作</th></tr></thead><tbody>{trs or '<tr><td colspan="12">暂无匹配记录</td></tr>'}</tbody></table></div></section>'''
+<div class="table-wrap"><table><thead><tr><th>记录编号</th><th>客户编号</th><th>用户名</th><th>年龄</th><th>年收入</th><th>申请金额</th><th>已有负债</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>操作</th></tr></thead><tbody>{trs or '<tr><td colspan="13">暂无匹配记录</td></tr>'}</tbody></table></div></section>'''
     return admin_layout("申请记录管理", "records", content)
 
 
@@ -1532,15 +1549,15 @@ def admin_customers_page(params: dict[str, str]) -> str:
         hist = customer_history(int(r["id"]))
         latest = hist[0] if hist else None
         history_rows = "".join(f"<tr><td>{esc(h['created_time'])}</td><td>{money(h['requested_loan_amount'])}</td><td>{float(h['default_probability'])*100:.2f}%</td><td>{float(h['credit_score']):.2f}</td><td>{esc(h['risk_level'])}</td><td>{esc(assessment_suggestion(h))}</td></tr>" for h in hist)
-        body_rows.append(f'''<tr><td>{esc(r["username"])}</td><td>{esc(r["created_time"])}</td><td>{r["apply_count"]}</td><td>{esc(r["last_apply_time"] or "暂无")}</td><td>{esc(latest["risk_level"] if latest else "暂无")}</td><td><span class="status-badge">{'启用' if r["account_status"] == "enabled" else '禁用'}</span></td><td><details class="admin-detail"><summary>查看客户历史申请</summary><div class="table-wrap"><table><thead><tr><th>申请时间</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th></tr></thead><tbody>{history_rows or '<tr><td colspan="6">暂无申请记录</td></tr>'}</tbody></table></div></details><form method="post" action="/admin/toggle_user"><input type="hidden" name="user_id" value="{r["id"]}"><button class="small-button" type="submit">{'禁用账号' if r["account_status"] == "enabled" else '启用账号'}</button></form></td></tr>''')
-    content = f'''<section class="panel admin-panel"><h2>客户信息管理</h2><form class="filter-form" method="get" action="/admin/customers"><label>用户名<input name="q" value="{esc(params.get("q",""))}"></label><button type="submit">搜索</button><a class="button secondary" href="/admin/customers">重置</a></form><div class="table-wrap"><table><thead><tr><th>用户名</th><th>注册时间</th><th>历史申请次数</th><th>最近一次申请时间</th><th>最近一次风险等级</th><th>账号状态</th><th>操作</th></tr></thead><tbody>{''.join(body_rows) or '<tr><td colspan="7">暂无客户</td></tr>'}</tbody></table></div></section>'''
+        body_rows.append(f'''<tr><td>{customer_no(r["id"])}</td><td>{esc(r["username"])}</td><td>{esc(r["created_time"])}</td><td>{r["apply_count"]}</td><td>{esc(r["last_apply_time"] or "暂无")}</td><td>{esc(latest["risk_level"] if latest else "暂无")}</td><td><span class="status-badge">{'启用' if r["account_status"] == "enabled" else '禁用'}</span></td><td><details class="admin-detail"><summary>查看客户历史申请</summary><div class="table-wrap"><table><thead><tr><th>申请时间</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th></tr></thead><tbody>{history_rows or '<tr><td colspan="6">暂无申请记录</td></tr>'}</tbody></table></div></details><form method="post" action="/admin/toggle_user"><input type="hidden" name="user_id" value="{r["id"]}"><button class="small-button" type="submit">{'禁用账号' if r["account_status"] == "enabled" else '启用账号'}</button></form></td></tr>''')
+    content = f'''<section class="panel admin-panel"><h2>客户信息管理</h2><form class="filter-form" method="get" action="/admin/customers"><label>用户名<input name="q" value="{esc(params.get("q",""))}"></label><button type="submit">搜索</button><a class="button secondary" href="/admin/customers">重置</a></form><div class="table-wrap"><table><thead><tr><th>客户编号</th><th>用户名</th><th>注册时间</th><th>历史申请次数</th><th>最近一次申请时间</th><th>最近一次风险等级</th><th>账号状态</th><th>操作</th></tr></thead><tbody>{''.join(body_rows) or '<tr><td colspan="8">暂无客户</td></tr>'}</tbody></table></div></section>'''
     return admin_layout("客户信息管理", "customers", content)
 
 
 def admin_high_risk_page() -> str:
     rows = [r for r in admin_records() if risk_grade_text(r["risk_level"]) in {"D", "E"} or assessment_suggestion(r) == "建议拒贷"]
-    trs = "".join(f"<tr><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td><td>{admin_record_detail(r)}</td></tr>" for r in rows)
-    content = f'''<section class="panel admin-panel"><h2>高风险客户名单</h2><p class="note">自动汇总 D/E 风险等级或审批建议为拒贷的申请记录，便于管理员重点复核。</p><div class="table-wrap"><table><thead><tr><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>详情</th></tr></thead><tbody>{trs or '<tr><td colspan="8">暂无高风险记录</td></tr>'}</tbody></table></div></section>'''
+    trs = "".join(f"<tr><td>{customer_no(r['user_id'])}</td><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td><td>{admin_record_detail(r)}</td></tr>" for r in rows)
+    content = f'''<section class="panel admin-panel"><h2>高风险客户名单</h2><p class="note">自动汇总 D/E 风险等级或审批建议为拒贷的申请记录，便于管理员重点复核。</p><div class="table-wrap"><table><thead><tr><th>客户编号</th><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>详情</th></tr></thead><tbody>{trs or '<tr><td colspan="9">暂无高风险记录</td></tr>'}</tbody></table></div></section>'''
     return admin_layout("高风险客户名单", "high_risk", content)
 
 
@@ -1656,10 +1673,10 @@ class RiskHandler(BaseHTTPRequestHandler):
                 if user_id: self.redirect("/", {"Set-Cookie": self.set_session_header("user", user_id)})
                 else: self.send_body(401, auth_page("login", "普通用户账号或密码错误，或账号已被禁用。"))
             return
-        if path == "/admin/delete_record":
+        if path == "/admin/archive_record":
             if not self.require_admin(): return
             data = self.form_data()
-            delete_record(posint(data.get("record_id"), 0))
+            archive_record(posint(data.get("record_id"), 0))
             self.redirect("/admin/records"); return
         if path == "/admin/toggle_user":
             if not self.require_admin(): return
