@@ -23,7 +23,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "源代码" / "data" / "bankriskinfo.csv"
 DB_PATH = BASE_DIR / "bank_risk_users.db"
 SESSION_COOKIE = "bank_risk_session"
-SESSIONS: dict[str, int] = {}
+SESSIONS: dict[str, dict[str, Any]] = {}
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin123"
 DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "45"))
@@ -550,7 +552,8 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            created_time TEXT NOT NULL
+            created_time TEXT NOT NULL,
+            account_status TEXT NOT NULL DEFAULT 'enabled'
         );
         CREATE TABLE IF NOT EXISTS user_profiles (
             user_id INTEGER PRIMARY KEY,
@@ -600,6 +603,9 @@ def init_db() -> None:
         }.items():
             if name not in existing_cols:
                 c.execute(ddl)
+        user_cols = {row["name"] for row in c.execute("PRAGMA table_info(users)").fetchall()}
+        if "account_status" not in user_cols:
+            c.execute("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'enabled'")
         record_cols = {row["name"] for row in c.execute("PRAGMA table_info(assessment_records)").fetchall()}
         for name, ddl in {
             "overdue_count": "ALTER TABLE assessment_records ADD COLUMN overdue_count REAL",
@@ -637,13 +643,15 @@ def create_user(username: str, password: str) -> tuple[bool, str]:
 
 
 def authenticate(username: str, password: str) -> int | None:
-    with conn() as c: row = c.execute("SELECT id,password_hash FROM users WHERE username=?", (username.strip(),)).fetchone()
+    with conn() as c: row = c.execute("SELECT id,password_hash,account_status FROM users WHERE username=?", (username.strip(),)).fetchone()
+    if row and row["account_status"] == "disabled":
+        return None
     return int(row["id"]) if row and verify_password(password, row["password_hash"]) else None
 
 
 def get_user(user_id: int | None) -> sqlite3.Row | None:
     if not user_id: return None
-    with conn() as c: return c.execute("SELECT id,username FROM users WHERE id=?", (user_id,)).fetchone()
+    with conn() as c: return c.execute("SELECT id,username,account_status FROM users WHERE id=?", (user_id,)).fetchone()
 
 
 def get_profile(user_id: int) -> dict[str, str]:
@@ -1070,6 +1078,38 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
 .record-details summary { cursor: pointer; font-weight: 800; color: var(--ink); }
 .history-day { margin-top: 12px; border-top: 1px solid #e4eaf0; padding-top: 12px; }
 .history-day > summary { cursor: pointer; font-weight: 900; color: var(--ink); }
+.role-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.role-choice label { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 12px; border: 1px solid rgba(236, 72, 153, .22); border-radius: 7px; background: rgba(255,255,255,.48); }
+.role-choice input { width: auto; height: auto; }
+body.admin-page {
+    background:
+        radial-gradient(circle at 18% 12%, rgba(244, 114, 182, .22), transparent 30%),
+        radial-gradient(circle at 82% 18%, rgba(251, 207, 232, .28), transparent 28%),
+        linear-gradient(135deg, #fff1f7 0%, #fce7f3 44%, #fff7fb 100%);
+}
+.admin-shell { min-height: 100vh; display: grid; grid-template-rows: 68px 1fr; }
+.admin-topbar { display: flex; justify-content: space-between; align-items: center; padding: 0 26px; background: rgba(255, 255, 255, .62); border-bottom: 1px solid rgba(244, 114, 182, .24); box-shadow: 0 12px 28px rgba(190, 24, 93, .10); backdrop-filter: blur(16px); }
+.admin-topbar h1 { color: #9d174d; font-size: 20px; }
+.admin-userbar { display: flex; gap: 10px; align-items: center; color: #9d174d; font-size: 13px; font-weight: 800; }
+.admin-main { display: grid; grid-template-columns: 236px minmax(0, 1fr); width: 100%; padding: 0; }
+.admin-sidebar { padding: 18px 14px; background: rgba(255, 255, 255, .42); border-right: 1px solid rgba(244, 114, 182, .22); }
+.admin-sidebar a { display: flex; align-items: center; min-height: 42px; padding: 0 13px; margin-bottom: 8px; border-radius: 7px; color: #9d174d; text-decoration: none; font-weight: 800; border: 1px solid transparent; }
+.admin-sidebar a.active, .admin-sidebar a:hover { background: rgba(252, 231, 243, .72); border-color: rgba(236, 72, 153, .22); }
+.admin-content { min-width: 0; padding: 24px; }
+.admin-panel { background: rgba(255,255,255,.62); border: 1px solid rgba(244,114,182,.22); box-shadow: 0 18px 42px rgba(190,24,93,.10); }
+.admin-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.admin-card { min-height: 112px; padding: 15px; border-radius: 8px; background: rgba(255,255,255,.58); border: 1px solid rgba(244,114,182,.20); color: #831843; }
+.admin-card span { color: #9f5676; font-size: 13px; }
+.admin-card strong { display: block; margin-top: 8px; font-size: 27px; color: #831843; }
+.admin-card select { margin-top: 9px; }
+.admin-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; }
+.filter-form { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)) auto; gap: 10px; align-items: end; margin-bottom: 14px; }
+.small-button { min-height: 34px; padding: 0 12px; font-size: 12px; }
+.danger-button { background: linear-gradient(135deg, #e11d48, #fb7185); }
+.status-badge { display: inline-flex; align-items: center; min-height: 28px; padding: 0 9px; border-radius: 999px; background: #fce7f3; color: #9d174d; font-weight: 900; }
+.admin-detail summary { cursor: pointer; font-weight: 900; color: #9d174d; }
+.rule-list { display: grid; gap: 12px; }
+.rule-item { padding: 13px; border-radius: 8px; background: rgba(255,255,255,.52); border: 1px solid rgba(244,114,182,.18); line-height: 1.75; }
 @media (max-width: 980px) {
     header { align-items: flex-start; flex-direction: column; padding: 18px 20px; position: static; }
     nav { justify-content: flex-start; }
@@ -1077,6 +1117,10 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
     .grid { grid-template-columns: 1fr; }
     .result-panel { position: static; }
     .form-grid, .section-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .admin-main, .admin-grid { grid-template-columns: 1fr; }
+    .admin-sidebar { display: flex; overflow-x: auto; gap: 8px; border-right: 0; border-bottom: 1px solid rgba(244,114,182,.22); }
+    .admin-sidebar a { white-space: nowrap; margin-bottom: 0; }
+    .admin-cards, .filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
     .brand { align-items: flex-start; min-width: 0; }
@@ -1084,6 +1128,7 @@ tr:hover td { background: rgba(255, 255, 255, .38); }
     h1 { font-size: 19px; }
     .form-grid, .section-fields, .score-row, .detail-grid, .metrics { grid-template-columns: 1fr; }
     .trend-summary { grid-template-columns: 1fr; }
+    .admin-cards, .filter-form { grid-template-columns: 1fr; }
     section, .panel { padding: 16px; }
     nav a, nav span { flex: 1 1 auto; justify-content: center; }
 }
@@ -1099,7 +1144,8 @@ def layout(title: str, body: str, user: sqlite3.Row | None = None) -> str:
 def auth_page(kind: str, msg: str = "") -> str:
     is_reg = kind == "register"; title = "用户注册" if is_reg else "用户登录"; action = "/register" if is_reg else "/login"
     switch = '<a href="/login">已有账号，去登录</a>' if is_reg else '<a href="/register">没有账号，去注册</a>'
-    return layout(title, f'''<div class="auth-shell"><section class="panel auth-card"><h2>{title}</h2>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="auth-form" method="post" action="{action}"><label>用户名<input name="username" required minlength="3" autocomplete="username"></label><label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password"></label><div class="actions"><button type="submit">{title}</button><span class="note">{switch}</span></div></form></section></div>''')
+    role = '' if is_reg else '''<div><label>登录身份选择</label><div class="role-choice"><label><input type="radio" name="role" value="user" checked>普通用户</label><label><input type="radio" name="role" value="admin">管理员</label></div></div>'''
+    return layout(title, f'''<div class="auth-shell"><section class="panel auth-card"><h2>银行客户信用风险评估系统</h2><h3>{title}</h3>{'<div class="flash">'+esc(msg)+'</div>' if msg else ''}<form class="auth-form" method="post" action="{action}"><label>用户名<input name="username" required minlength="3" autocomplete="username"></label><label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password"></label>{role}<div class="actions"><button type="submit">{title}</button><span class="note">{switch}</span></div></form></section></div>''')
 
 
 def profile_form(p: dict[str, str], msg: str = "") -> str:
@@ -1146,7 +1192,7 @@ def index_page(user: sqlite3.Row, profile: dict[str, str]) -> str:
 <fieldset class="form-section"><legend>个人基本信息</legend><div class="section-fields"><label>年龄<input name="age" type="number" value="{esc(v['age'])}" min="0"></label><label>工作年限<input name="employmentYears" type="number" value="{esc(v['employmentYears'])}" min="0" step="0.5"></label><label>信用历史年限<input name="creditHistoryYears" type="number" value="{esc(v['creditHistoryYears'])}" min="0" step="0.5"></label><label>城市等级{select_options('CityId',v['CityId'],['一线城市','二线城市','三线城市','其他'])}</label><label>学历{select_options('education',v['education'],['高中','本科','硕士及以上','其他'])}</label><label>婚姻状态{select_options('maritalStatus',v['maritalStatus'],['未婚','已婚','其他'])}</label><label>性别{select_options('sex',v['sex'],['男','女'])}</label><label>在网时长{select_options('netLength',v['netLength'],['0-6个月','6-12个月','12-24个月','24个月以上','无效'])}</label></div></fieldset>
 <fieldset class="form-section"><legend>收入与支出信息</legend><div class="section-fields"><label>月收入<input name="monthlyIncome" type="number" value="{esc(v['monthlyIncome'])}" min="0"></label><label>月支出<input name="monthlyExpense" type="number" value="{esc(v['monthlyExpense'])}" min="0"></label><label>已有月还款金额<input name="existingMonthlyRepayment" type="number" value="{esc(v['existingMonthlyRepayment'])}" min="0"></label><label>申请贷款金额<input name="requestedAmount" type="number" value="{esc(v['requestedAmount'])}" min="0"></label><label>贷款期限（月）<input name="loanTerm" type="number" value="{esc(v['loanTerm'])}" min="1"></label></div></fieldset>
 <fieldset class="form-section"><legend>信用与负债信息</legend><div class="section-fields"><label>银行卡开卡年限<input name="card_age" type="number" value="{esc(v['card_age'])}" min="0"></label><label>总消费金额<input name="transTotalAmt" type="number" value="{esc(v['transTotalAmt'])}" min="0"></label><label>总消费笔数<input name="transTotalCnt" type="number" value="{esc(v['transTotalCnt'])}" min="0"></label><label>网上消费金额<input name="onlineTransAmt" type="number" value="{esc(v['onlineTransAmt'])}" min="0"></label><label>取现金额<input name="cashTotalAmt" type="number" value="{esc(v['cashTotalAmt'])}" min="0"></label><label>历史逾期次数<input name="overdueCount" type="number" value="{esc(v['overdueCount'])}" min="0"></label><label>信用卡使用率（%）<input name="creditCardUsage" type="number" value="{esc(v['creditCardUsage'])}" min="0" max="100"></label></div></fieldset>
-<fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证（姓名、身份证号、手机号）{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
+<fieldset class="form-section"><legend>风险辅助信息</legend><div class="section-fields"><label>评估模型{model_select()}</label><label>身份验证{select_options('idVerify',v['idVerify'],['一致','不一致','未知'])}</label><label>三要素验证{select_options('threeVerify',v['threeVerify'],['一致','不一致','未知'])}</label><label>是否有法院记录{yesno('inCourt',v['inCourt'])}</label><label>是否在黑名单{yesno('isBlackList',v['isBlackList'])}</label><label>是否逾期{yesno('isDue',v['isDue'])}</label></div></fieldset>
 <div class="actions"><button type="submit" id="assessBtn">评估违约风险</button><span class="note">长期基础字段已从个人信息自动填充，可在本次评估中临时修改。</span></div></form></section><section class="result-panel"><h2>评估结果</h2><div class="result" id="result"><div class="result-empty"><strong>等待提交评估</strong><span class="note">提交申请人信息后，这里会显示风险概率、信用评分、额度建议和改进方案。</span></div></div></section></div>
 <script>const form=document.getElementById("riskForm"),result=document.getElementById("result"),assessBtn=document.getElementById("assessBtn");let lastResult=null;form.querySelectorAll("input,select").forEach(el=>el.required=true);const htmlEsc=s=>String(s).replace(/[&<>"']/g,c=>c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;");const money=v=>Number(v).toLocaleString("zh-CN",{{style:"currency",currency:"CNY",maximumFractionDigits:0}});const tipNames=["monthlyIncome","monthlyExpense","existingMonthlyRepayment","requestedAmount","loanTerm","overdueCount","creditCardUsage"];tipNames.forEach(name=>{{const input=form.elements[name];if(input&&!document.getElementById(`${{name}}Tip`)){{const tip=document.createElement("small");tip.className="tip";tip.id=`${{name}}Tip`;input.insertAdjacentElement("afterend",tip);}}}});const num=name=>{{const el=form.elements[name];return el&&el.value!==""?Number(el.value):null;}};function showTip(name,message,level="error"){{const input=form.elements[name],tip=document.getElementById(`${{name}}Tip`);if(!input||!tip)return false;if(message){{tip.textContent=message;tip.className=`tip ${{level}}`;input.classList.toggle("error",level==="error");return level==="error";}}tip.textContent="";tip.className="tip";input.classList.remove("error");return false;}}function validateFormRealtime(){{let hasError=false;const income=num("monthlyIncome"),expense=num("monthlyExpense"),debt=num("existingMonthlyRepayment"),requested=num("requestedAmount"),term=num("loanTerm"),overdue=num("overdueCount"),usage=num("creditCardUsage");hasError=showTip("monthlyIncome",income!==null&&income<=0?"请输入有效月收入":"")||hasError;hasError=showTip("monthlyExpense",expense!==null&&expense<0?"月支出不能为负数":income!==null&&expense!==null&&expense>income?"月支出高于月收入，可能影响评估结果":"",income!==null&&expense!==null&&expense>income?"warn":"error")||hasError;hasError=showTip("existingMonthlyRepayment",debt!==null&&debt<0?"已有月还款不能为负数":income!==null&&debt!==null&&debt>income?"已有月还款高于月收入，可能影响评估结果":"",income!==null&&debt!==null&&debt>income?"warn":"error")||hasError;hasError=showTip("requestedAmount",requested!==null&&requested<=0?"申请金额应大于 0":income!==null&&requested!==null&&requested>income*24?"申请金额偏高，可能降低审批通过率":"",income!==null&&requested!==null&&requested>income*24?"warn":"error")||hasError;hasError=showTip("loanTerm",term!==null&&term<=0?"贷款期限应大于 0":"")||hasError;hasError=showTip("overdueCount",overdue!==null&&overdue<0?"逾期次数不能为负数":"")||hasError;hasError=showTip("creditCardUsage",usage!==null&&(usage<0||usage>100)?"信用卡使用率应在 0% - 100%":"")||hasError;if(assessBtn)assessBtn.disabled=hasError;return !hasError;}}form.querySelectorAll("input,select").forEach(item=>{{item.addEventListener("input",validateFormRealtime);item.addEventListener("change",validateFormRealtime);}});validateFormRealtime();function showToast(msg){{const old=document.querySelector(".toast");if(old)old.remove();const toast=document.createElement("div");toast.className="toast";toast.textContent=msg;document.body.appendChild(toast);setTimeout(()=>toast.remove(),2600);}}async function saveCurrentRecord(){{if(!lastResult)return;const btn=document.getElementById("saveRecordBtn"),status=document.getElementById("saveStatus");btn.disabled=true;status.textContent="正在保存...";const r=await fetch("/save_record",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(lastResult)}});if(r.ok){{status.textContent="记录保存成功，可在历史记录中查看。";btn.textContent="✓ 已保存";showToast("记录保存成功，可在历史记录中查看");}}else{{status.textContent="保存失败，请重新登录后再试。";btn.disabled=false;}}}}function requestAssessment(){{if(form.requestSubmit){{form.requestSubmit();}}else{{form.dispatchEvent(new Event("submit",{{cancelable:true,bubbles:true}}));}}}}async function askRiskAssistant(){{const input=document.getElementById("riskQuestion"),answer=document.getElementById("riskAnswer"),btn=document.getElementById("riskAskBtn");const question=(input?.value||"").trim();if(!question){{answer.textContent="请输入问题后再咨询。";return}}if(!lastResult){{answer.textContent="请先完成一次风险评估。";return}}btn.disabled=true;answer.textContent="AI 正在分析...";const r=await fetch("/ai_qa",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{question,assessment:lastResult}})}});if(!r.ok){{answer.textContent="问答失败，请重新登录后再试。";btn.disabled=false;return}}const d=await r.json();answer.textContent=d.answer||"未返回回答。";btn.disabled=false;}}form.addEventListener("submit",async e=>{{e.preventDefault();if(!validateFormRealtime()){{showToast("请先修正表单中的明显异常数据");return}}const payload=Object.fromEntries(new FormData(form).entries());lastResult=null;result.innerHTML='<div class="result-empty"><strong>正在评估...</strong><span class="note">模型正在计算风险概率、推荐额度和大模型解释。</span></div>';const r=await fetch("/predict",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});if(!r.ok){{result.innerHTML='<div class="result-empty"><strong>评估失败</strong><span class="note">请重新登录后再试。</span></div>';return}}const d=await r.json();lastResult=d;const a=d.loan_amount,items=d.improvement_advice.map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),factors=(d.risk_factors||[]).map(x=>`<li>${{htmlEsc(x)}}</li>`).join(""),riskPct=Math.max(0,Math.min(100,d.probability*100)).toFixed(2),scorePct=Math.max(0,Math.min(100,d.credit_score)).toFixed(2);result.innerHTML=`<div class="result-shell risk-grade-${{d.risk_grade}}"><div class="score-row"><div class="score-card score-ring-card"><span>信用评分</span><div class="score-ring" style="--score:${{scorePct}}"><div class="score-ring-inner">${{d.credit_score}}</div></div></div><div class="score-card risk-bar-card"><span>违约风险概率</span><div class="score">${{d.percentage}}</div><div class="risk-bar"><div class="risk-bar-fill" style="--risk:${{riskPct}}%"></div></div></div></div><div class="level">${{htmlEsc(d.level)}}</div><div><strong>审批建议：</strong>${{htmlEsc(d.suggestion)}}</div><div class="detail-block"><h3>建议可贷款额度</h3><div class="detail-grid"><div class="detail-item">可支配月收入<br><strong>${{money(a.disposable_income)}}</strong></div><div class="detail-item">推荐可贷款额度<br><strong>${{money(a.recommended_amount)}}</strong></div><div class="detail-item">申请金额<br><strong>${{money(a.requested_amount)}}</strong></div><div class="detail-item">金额判断<br><strong>${{htmlEsc(a.amount_comment)}}</strong></div></div></div><div class="detail-block"><h3>预计贷款流程和到账时间</h3><div class="detail-grid"><div class="detail-item">预计流程<br><strong>${{htmlEsc(d.loan_process)}}</strong></div><div class="detail-item">预计到账<br><strong>${{htmlEsc(d.expected_time)}}</strong></div></div></div><div class="detail-block"><div class="result-actions"><button type="button" id="saveRecordBtn" onclick="saveCurrentRecord()">保存记录</button><button type="button" class="button secondary" onclick="requestAssessment()">重新评估</button></div><div class="note save-status" id="saveStatus">评估结果尚未写入历史记录。</div><div class="note">大模型分析状态：${{htmlEsc(d.ai_analysis_note||"未返回状态信息")}}</div></div><details class="detail-block result-details"><summary>本次风险主要影响因素</summary><ul class="factor-list">${{factors}}</ul></details><details class="detail-block result-details"><summary>信用提升建议</summary><ul class="advice-list">${{items}}</ul></details><details class="detail-block result-details"><summary>AI 风险问答助手</summary><div class="qa-box"><textarea class="qa-input" id="riskQuestion" placeholder="例如：我应该先降低申请金额，还是先减少已有负债？"></textarea><div class="result-actions"><button type="button" id="riskAskBtn" onclick="askRiskAssistant()">咨询 AI</button></div><div class="qa-answer" id="riskAnswer">可围绕本次风险结果继续提问。</div></div></details><details class="detail-block result-details"><summary>模型说明</summary><div class="detail-grid"><div class="detail-item">使用模型<br><strong>${{htmlEsc(d.model_label)}}</strong></div><div class="detail-item">模型区分能力<br><strong>${{htmlEsc(d.auc)}}</strong></div></div><div class="note">${{htmlEsc(d.model_recommendation_reason||"")}}</div></details></div>`}});</script>'''
     return layout("信用评估", body, user)
@@ -1312,6 +1358,213 @@ def history_page(user: sqlite3.Row, rows: list[sqlite3.Row]) -> str:
     summary_card = f'<div class="ai-summary-card"><h2>AI 历史记录总结</h2><p class="note">{esc(summary_note)}</p><p>{esc(summary)}</p></div>'
     return layout("历史记录", f'<section class="panel">{score_trend(rows)}{summary_card}<h2>历史评估记录</h2>{records_html}</section>', user)
 
+
+def risk_grade_text(value: Any) -> str:
+    text = str(value or "")
+    return text[:1] if text[:1] in {"A", "B", "C", "D", "E"} else "未定"
+
+
+def row_assessment(row: sqlite3.Row) -> dict[str, Any]:
+    raw = row_get(row, "assessment_json", "")
+    if raw:
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def applicant_name(row: sqlite3.Row) -> str:
+    return str(row["username"])
+
+
+def assessment_suggestion(row: sqlite3.Row) -> str:
+    suggestion = str(row_assessment(row).get("suggestion") or "")
+    if suggestion:
+        return suggestion
+    grade = risk_grade_text(row["risk_level"])
+    return RISK_POLICIES.get(grade, ("", "", 0, "", ""))[1]
+
+
+def admin_records(params: dict[str, str] | None = None) -> list[sqlite3.Row]:
+    params = params or {}
+    order = "ASC" if params.get("sort") == "oldest" else "DESC"
+    with conn() as c:
+        rows = c.execute(f"""
+        SELECT r.*, u.username, u.created_time AS user_created_time, u.account_status,
+               p.age, p.identity_verified,
+               p.three_factor_verified, p.court_record, p.blacklist
+        FROM assessment_records r
+        JOIN users u ON u.id = r.user_id
+        LEFT JOIN user_profiles p ON p.user_id = u.id
+        ORDER BY r.created_time {order}, r.id {order}
+        """).fetchall()
+    keyword = params.get("q", "").strip().lower()
+    grade = params.get("grade", "")
+    suggestion = params.get("suggestion", "")
+    if keyword:
+        rows = [r for r in rows if keyword in applicant_name(r).lower() or keyword in str(r["username"]).lower()]
+    if grade:
+        rows = [r for r in rows if risk_grade_text(r["risk_level"]) == grade]
+    if suggestion:
+        rows = [r for r in rows if assessment_suggestion(r) == suggestion]
+    return rows
+
+
+def admin_customers(keyword: str = "") -> list[sqlite3.Row]:
+    with conn() as c:
+        rows = c.execute("""
+        SELECT u.id, u.username, u.created_time, u.account_status,
+               COUNT(r.id) AS apply_count,
+               MAX(r.created_time) AS last_apply_time
+        FROM users u
+        LEFT JOIN user_profiles p ON p.user_id = u.id
+        LEFT JOIN assessment_records r ON r.user_id = u.id
+        GROUP BY u.id
+        ORDER BY COALESCE(MAX(r.created_time), u.created_time) DESC
+        """).fetchall()
+    keyword = keyword.strip().lower()
+    if keyword:
+        rows = [r for r in rows if keyword in str(r["username"]).lower()]
+    return rows
+
+
+def customer_history(user_id: int) -> list[sqlite3.Row]:
+    with conn() as c:
+        return c.execute("SELECT * FROM assessment_records WHERE user_id=? ORDER BY created_time DESC,id DESC", (user_id,)).fetchall()
+
+
+def delete_record(record_id: int) -> None:
+    with conn() as c:
+        c.execute("DELETE FROM assessment_records WHERE id=?", (record_id,))
+
+
+def toggle_user_status(user_id: int) -> None:
+    with conn() as c:
+        row = c.execute("SELECT account_status FROM users WHERE id=?", (user_id,)).fetchone()
+        if row:
+            new_status = "enabled" if row["account_status"] == "disabled" else "disabled"
+            c.execute("UPDATE users SET account_status=? WHERE id=?", (new_status, user_id))
+
+
+def admin_layout(title: str, active: str, content: str) -> str:
+    items = [
+        ("/admin", "home", "首页概览"),
+        ("/admin/records", "records", "申请记录管理"),
+        ("/admin/customers", "customers", "客户信息管理"),
+        ("/admin/high_risk", "high_risk", "高风险客户名单"),
+        ("/admin/rules", "rules", "风险规则设置"),
+        ("/admin/about", "about", "系统说明"),
+        ("/logout", "logout", "退出登录"),
+    ]
+    menu = "".join(f'<a class="{ "active" if key == active else "" }" href="{href}">{label}</a>' for href, key, label in items)
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{APP_CSS}</style></head>
+<body class="admin-page"><div class="admin-shell"><div class="admin-topbar"><h1>银行客户风险评估管理后台</h1><div class="admin-userbar"><span>当前登录身份：管理员</span><a class="button secondary small-button" href="/logout">退出登录</a></div></div>
+<div class="admin-main"><aside class="admin-sidebar">{menu}</aside><main class="admin-content">{content}</main></div></div></body></html>'''
+
+
+def admin_dashboard_page() -> str:
+    rows = admin_records()
+    total = len(rows)
+    today = datetime.now().date().isoformat()
+    today_count = sum(1 for r in rows if str(r["created_time"]).split("T", 1)[0] == today)
+    avg_prob = sum(float(r["default_probability"]) for r in rows) / total if total else 0
+    avg_score = sum(float(r["credit_score"]) for r in rows) / total if total else 0
+    grade_counts = {g: sum(1 for r in rows if risk_grade_text(r["risk_level"]) == g) for g in ["A", "B", "C", "D", "E"]}
+    suggestion_counts = {s: sum(1 for r in rows if assessment_suggestion(r) == s) for s in sorted({assessment_suggestion(r) for r in rows if assessment_suggestion(r)})}
+    suggestion_options = "".join(f'<option>{esc(s)}：{count} 条</option>' for s, count in suggestion_counts.items()) or '<option>暂无数据</option>'
+    grade_options = "".join(f'<option value="{g}">{g}级：{grade_counts[g]} 人</option>' for g in ["A", "B", "C", "D", "E"])
+    dist_rows = "".join(f"<tr><td>{g}级</td><td>{grade_counts[g]}</td><td>{(grade_counts[g] / total * 100 if total else 0):.1f}%</td></tr>" for g in ["A", "B", "C", "D", "E"])
+    recent_rows = "".join(f"<tr><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td></tr>" for r in rows[:5])
+    content = f'''<section class="panel admin-panel"><h2>首页概览</h2><div class="admin-cards">
+<div class="admin-card"><span>累计申请数量</span><strong>{total}</strong></div>
+<div class="admin-card"><span>今日申请数量</span><strong>{today_count}</strong></div>
+<div class="admin-card"><span>不同风险客户数量</span><select>{grade_options}</select></div>
+<div class="admin-card"><span>平均违约概率</span><strong>{avg_prob*100:.2f}%</strong></div>
+<div class="admin-card"><span>平均信用评分</span><strong>{avg_score:.2f}</strong></div>
+<div class="admin-card"><span>不同审批建议数量</span><select>{suggestion_options}</select></div></div>
+<div class="admin-grid"><div><h2>风险等级分布</h2><div class="table-wrap"><table><thead><tr><th>风险等级</th><th>数量</th><th>占比</th></tr></thead><tbody>{dist_rows}</tbody></table></div></div>
+<div><h2>最近申请记录</h2><div class="table-wrap"><table><thead><tr><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th></tr></thead><tbody>{recent_rows or '<tr><td colspan="7">暂无申请记录</td></tr>'}</tbody></table></div></div></div></section>'''
+    return admin_layout("管理员后台", "home", content)
+
+
+def admin_record_detail(row: sqlite3.Row) -> str:
+    data = row_assessment(row)
+    n = data.get("normalized_input", {}) if isinstance(data.get("normalized_input"), dict) else {}
+    loan = data.get("loan_amount", {}) if isinstance(data.get("loan_amount"), dict) else {}
+    overdue_count = row_get(row, "overdue_count", 0)
+    credit_usage = row_get(row, "credit_card_usage", 0)
+    overdue_count = 0 if overdue_count in (None, "") else overdue_count
+    credit_usage = 0 if credit_usage in (None, "") else credit_usage
+    return f'''<details class="admin-detail"><summary>查看详情</summary><div class="detail-grid">
+<div class="detail-item">用户名<br><strong>{esc(applicant_name(row))}</strong></div><div class="detail-item">年龄<br><strong>{esc(n.get("age") or row_get(row, "age", ""))}</strong></div>
+<div class="detail-item">月收入<br><strong>{money(row["monthly_income"])}</strong></div>
+<div class="detail-item">月支出<br><strong>{money(row["monthly_expense"])}</strong></div><div class="detail-item">已有月还款金额<br><strong>{money(row["existing_monthly_debt"])}</strong></div>
+<div class="detail-item">贷款期限<br><strong>{esc(row["loan_term"])} 月</strong></div><div class="detail-item">申请金额<br><strong>{money(row["requested_loan_amount"])}</strong></div>
+<div class="detail-item">是否实名认证<br><strong>{esc(n.get("idVerify") or row_get(row, "identity_verified", ""))}</strong></div><div class="detail-item">三要素验证<br><strong>{esc(n.get("threeVerify") or row_get(row, "three_factor_verified", ""))}</strong></div>
+<div class="detail-item">法院记录<br><strong>{'是' if str(n.get("inCourt") or row_get(row, "court_record", 0)) == '1' else '否'}</strong></div><div class="detail-item">黑名单<br><strong>{'是' if str(n.get("isBlackList") or row_get(row, "blacklist", 0)) == '1' else '否'}</strong></div>
+<div class="detail-item">逾期记录<br><strong>{esc(overdue_count)} 次</strong></div><div class="detail-item">信用卡使用率<br><strong>{esc(credit_usage)}%</strong></div>
+<div class="detail-item">违约概率<br><strong>{float(row["default_probability"])*100:.2f}%</strong></div><div class="detail-item">信用评分<br><strong>{float(row["credit_score"]):.2f}</strong></div>
+<div class="detail-item">风险等级<br><strong>{esc(row["risk_level"])}</strong></div><div class="detail-item">审批建议<br><strong>{esc(assessment_suggestion(row))}</strong></div>
+<div class="detail-item">推荐贷款额度<br><strong>{money(row["recommended_loan_amount"])}</strong></div><div class="detail-item">金额判断<br><strong>{esc(loan.get("amount_comment", ""))}</strong></div>
+<div class="detail-item">预计审批流程<br><strong>{esc(data.get("loan_process", ""))}</strong></div><div class="detail-item">预计到账时间<br><strong>{esc(data.get("expected_time", ""))}</strong></div>
+</div></details>'''
+
+
+def admin_records_page(params: dict[str, str]) -> str:
+    rows = admin_records(params)
+    selected = lambda key, val: " selected" if params.get(key, "") == val else ""
+    trs = "".join(f'''<tr><td>{r["id"]}</td><td>{esc(applicant_name(r))}</td><td>{esc(row_assessment(r).get("normalized_input", {}).get("age") or row_get(r, "age", ""))}</td><td>{money(float(r["monthly_income"] or 0)*12)}</td><td>{money(r["requested_loan_amount"])}</td><td>{money(r["existing_monthly_debt"])}</td><td>{float(r["default_probability"])*100:.2f}%</td><td>{float(r["credit_score"]):.2f}</td><td>{esc(r["risk_level"])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r["created_time"])}</td><td>{admin_record_detail(r)}<form method="post" action="/admin/delete_record" onsubmit="return confirm('确认删除这条申请记录吗？');"><input type="hidden" name="record_id" value="{r["id"]}"><button class="small-button danger-button" type="submit">删除记录</button></form></td></tr>''' for r in rows)
+    content = f'''<section class="panel admin-panel"><h2>申请记录管理</h2><form class="filter-form" method="get" action="/admin/records">
+<label>用户名<input name="q" value="{esc(params.get("q", ""))}" placeholder="按用户名搜索"></label><label>风险等级<select name="grade"><option value="">全部</option>{''.join(f'<option value="{g}"{selected("grade", g)}>{g}级</option>' for g in ["A","B","C","D","E"])}</select></label>
+<label>审批建议<select name="suggestion"><option value="">全部</option>{''.join(f'<option{selected("suggestion", p)}>{p}</option>' for p in ["可直接通过","可放贷","人工审核","降低额度或提高利率","建议拒贷"])}</select></label>
+<label>申请时间排序<select name="sort"><option value="latest"{selected("sort","latest")}>最新优先</option><option value="oldest"{selected("sort","oldest")}>最早优先</option></select></label>
+<button type="submit">筛选</button><a class="button secondary" href="/admin/records">重置筛选</a></form>
+<div class="table-wrap"><table><thead><tr><th>记录编号</th><th>用户名</th><th>年龄</th><th>年收入</th><th>申请金额</th><th>已有负债</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>操作</th></tr></thead><tbody>{trs or '<tr><td colspan="12">暂无匹配记录</td></tr>'}</tbody></table></div></section>'''
+    return admin_layout("申请记录管理", "records", content)
+
+
+def admin_customers_page(params: dict[str, str]) -> str:
+    rows = admin_customers(params.get("q", ""))
+    body_rows = []
+    for r in rows:
+        hist = customer_history(int(r["id"]))
+        latest = hist[0] if hist else None
+        history_rows = "".join(f"<tr><td>{esc(h['created_time'])}</td><td>{money(h['requested_loan_amount'])}</td><td>{float(h['default_probability'])*100:.2f}%</td><td>{float(h['credit_score']):.2f}</td><td>{esc(h['risk_level'])}</td><td>{esc(assessment_suggestion(h))}</td></tr>" for h in hist)
+        body_rows.append(f'''<tr><td>{esc(r["username"])}</td><td>{esc(r["created_time"])}</td><td>{r["apply_count"]}</td><td>{esc(r["last_apply_time"] or "暂无")}</td><td>{esc(latest["risk_level"] if latest else "暂无")}</td><td><span class="status-badge">{'启用' if r["account_status"] == "enabled" else '禁用'}</span></td><td><details class="admin-detail"><summary>查看客户历史申请</summary><div class="table-wrap"><table><thead><tr><th>申请时间</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th></tr></thead><tbody>{history_rows or '<tr><td colspan="6">暂无申请记录</td></tr>'}</tbody></table></div></details><form method="post" action="/admin/toggle_user"><input type="hidden" name="user_id" value="{r["id"]}"><button class="small-button" type="submit">{'禁用账号' if r["account_status"] == "enabled" else '启用账号'}</button></form></td></tr>''')
+    content = f'''<section class="panel admin-panel"><h2>客户信息管理</h2><form class="filter-form" method="get" action="/admin/customers"><label>用户名<input name="q" value="{esc(params.get("q",""))}"></label><button type="submit">搜索</button><a class="button secondary" href="/admin/customers">重置</a></form><div class="table-wrap"><table><thead><tr><th>用户名</th><th>注册时间</th><th>历史申请次数</th><th>最近一次申请时间</th><th>最近一次风险等级</th><th>账号状态</th><th>操作</th></tr></thead><tbody>{''.join(body_rows) or '<tr><td colspan="7">暂无客户</td></tr>'}</tbody></table></div></section>'''
+    return admin_layout("客户信息管理", "customers", content)
+
+
+def admin_high_risk_page() -> str:
+    rows = [r for r in admin_records() if risk_grade_text(r["risk_level"]) in {"D", "E"} or assessment_suggestion(r) == "建议拒贷"]
+    trs = "".join(f"<tr><td>{esc(applicant_name(r))}</td><td>{money(r['requested_loan_amount'])}</td><td>{float(r['default_probability'])*100:.2f}%</td><td>{float(r['credit_score']):.2f}</td><td>{esc(r['risk_level'])}</td><td>{esc(assessment_suggestion(r))}</td><td>{esc(r['created_time'])}</td><td>{admin_record_detail(r)}</td></tr>" for r in rows)
+    content = f'''<section class="panel admin-panel"><h2>高风险客户名单</h2><p class="note">自动汇总 D/E 风险等级或审批建议为拒贷的申请记录，便于管理员重点复核。</p><div class="table-wrap"><table><thead><tr><th>用户名</th><th>申请金额</th><th>违约概率</th><th>信用评分</th><th>风险等级</th><th>审批建议</th><th>申请时间</th><th>详情</th></tr></thead><tbody>{trs or '<tr><td colspan="8">暂无高风险记录</td></tr>'}</tbody></table></div></section>'''
+    return admin_layout("高风险客户名单", "high_risk", content)
+
+
+def admin_rules_page() -> str:
+    grade_rules = "".join(f"<tr><td>{g}级</td><td>{esc(label)}</td><td>{esc(suggestion)}</td></tr>" for g, (label, suggestion, *_rest) in RISK_POLICIES.items())
+    content = f'''<section class="panel admin-panel"><h2>风险规则设置</h2><div class="rule-list">
+<div class="rule-item"><h3>风险等级划分规则</h3><div class="table-wrap"><table><thead><tr><th>风险</th><th>含义</th><th>审批建议</th></tr></thead><tbody>{grade_rules}</tbody></table></div><p class="note">系统按照模型基础违约概率叠加业务规则修正后形成最终违约概率，并映射为 A 到 E 五级风险。</p></div>
+<div class="rule-item"><h3>审批建议规则</h3><p>A级通常可直接通过，B级可放贷，C级进入人工审核，D级建议降低额度或提高利率，E级建议拒贷。命中黑名单、存在严重法院记录或严重逾期时，系统会显著提高风险判断，审批建议倾向拒绝。</p></div>
+<div class="rule-item"><h3>额度推荐规则</h3><p>系统根据月收入、月支出、已有月还款、贷款期限、风险等级等信息综合计算推荐贷款额度；当申请金额明显高于推荐额度时提示申请金额偏高；高风险客户推荐额度会明显降低，E级风险通常不建议放款。</p></div>
+</div></section>'''
+    return admin_layout("风险规则设置", "rules", content)
+
+
+def admin_about_page() -> str:
+    content = '''<section class="panel admin-panel"><h2>系统说明</h2><div class="rule-list">
+<div class="rule-item">管理员后台用于辅助银行工作人员查看客户贷款申请和风险评估结果。</div>
+<div class="rule-item">系统能够统计整体申请情况，帮助管理员快速掌握客户风险分布。</div>
+<div class="rule-item">管理员可以查看所有申请记录，并根据违约概率、信用评分、风险等级和审批建议进行人工复核。</div>
+<div class="rule-item">风险规则设置页面用于展示系统风险判断逻辑，提高系统可解释性。</div>
+<div class="rule-item">本系统适用于银行贷款初筛、客户信用风险辅助评估和贷款审批参考场景。</div>
+</div></section>'''
+    return admin_layout("系统说明", "about", content)
+
+
 class RiskHandler(BaseHTTPRequestHandler):
     def send_body(self, status: int, body: str | bytes, ctype: str = "text/html; charset=utf-8", headers: dict[str, str] | None = None) -> None:
         payload = body.encode("utf-8") if isinstance(body, str) else body
@@ -1332,7 +1585,13 @@ class RiskHandler(BaseHTTPRequestHandler):
 
     def current_user_id(self) -> int | None:
         jar = cookies.SimpleCookie(self.headers.get("Cookie", "")); morsel = jar.get(SESSION_COOKIE)
-        return SESSIONS.get(morsel.value) if morsel else None
+        session = SESSIONS.get(morsel.value) if morsel else None
+        return int(session["user_id"]) if session and session.get("role") == "user" else None
+
+    def current_role(self) -> str | None:
+        jar = cookies.SimpleCookie(self.headers.get("Cookie", "")); morsel = jar.get(SESSION_COOKIE)
+        session = SESSIONS.get(morsel.value) if morsel else None
+        return str(session.get("role")) if session else None
 
     def current_user(self) -> sqlite3.Row | None:
         return get_user(self.current_user_id())
@@ -1342,8 +1601,14 @@ class RiskHandler(BaseHTTPRequestHandler):
         if not user: self.redirect("/login")
         return user
 
-    def set_session_header(self, user_id: int) -> str:
-        token = secrets.token_urlsafe(32); SESSIONS[token] = user_id
+    def require_admin(self) -> bool:
+        if self.current_role() != "admin":
+            self.redirect("/login")
+            return False
+        return True
+
+    def set_session_header(self, role: str, user_id: int | None = None) -> str:
+        token = secrets.token_urlsafe(32); SESSIONS[token] = {"role": role, "user_id": user_id or 0}
         return f"{SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax"
 
     def clear_session_header(self) -> str:
@@ -1356,6 +1621,16 @@ class RiskHandler(BaseHTTPRequestHandler):
         if path == "/login": self.send_body(200, auth_page("login")); return
         if path == "/register": self.send_body(200, auth_page("register")); return
         if path == "/logout": self.redirect("/login", {"Set-Cookie": self.clear_session_header()}); return
+        if path.startswith("/admin"):
+            if not self.require_admin(): return
+            qs = {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
+            if path == "/admin": self.send_body(200, admin_dashboard_page()); return
+            if path == "/admin/records": self.send_body(200, admin_records_page(qs)); return
+            if path == "/admin/customers": self.send_body(200, admin_customers_page(qs)); return
+            if path == "/admin/high_risk": self.send_body(200, admin_high_risk_page()); return
+            if path == "/admin/rules": self.send_body(200, admin_rules_page()); return
+            if path == "/admin/about": self.send_body(200, admin_about_page()); return
+            self.send_body(404, "Not Found", "text/plain; charset=utf-8"); return
         user = self.require_user()
         if not user: return
         if path == "/": self.send_body(200, index_page(user, get_profile(user["id"]))); return
@@ -1370,10 +1645,27 @@ class RiskHandler(BaseHTTPRequestHandler):
             data = self.form_data(); ok, msg = create_user(data.get("username", ""), data.get("password", ""))
             self.send_body(200 if ok else 400, auth_page("login" if ok else "register", msg)); return
         if path == "/login":
-            data = self.form_data(); user_id = authenticate(data.get("username", ""), data.get("password", ""))
-            if user_id: self.redirect("/", {"Set-Cookie": self.set_session_header(user_id)})
-            else: self.send_body(401, auth_page("login", "用户名或密码错误。"))
+            data = self.form_data(); role = data.get("role", "user")
+            if role == "admin":
+                if data.get("username", "").strip() == ADMIN_USERNAME and data.get("password", "") == ADMIN_PASSWORD:
+                    self.redirect("/admin", {"Set-Cookie": self.set_session_header("admin")})
+                else:
+                    self.send_body(401, auth_page("login", "管理员账号或密码错误。"))
+            else:
+                user_id = authenticate(data.get("username", ""), data.get("password", ""))
+                if user_id: self.redirect("/", {"Set-Cookie": self.set_session_header("user", user_id)})
+                else: self.send_body(401, auth_page("login", "普通用户账号或密码错误，或账号已被禁用。"))
             return
+        if path == "/admin/delete_record":
+            if not self.require_admin(): return
+            data = self.form_data()
+            delete_record(posint(data.get("record_id"), 0))
+            self.redirect("/admin/records"); return
+        if path == "/admin/toggle_user":
+            if not self.require_admin(): return
+            data = self.form_data()
+            toggle_user_status(posint(data.get("user_id"), 0))
+            self.redirect("/admin/customers"); return
         user = self.require_user()
         if not user: return
         if path == "/profile":
