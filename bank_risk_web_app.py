@@ -1099,18 +1099,20 @@ body.admin-page {
 .admin-topbar { display: flex; justify-content: space-between; align-items: center; padding: 0 26px; background: rgba(255, 255, 255, .62); border-bottom: 1px solid rgba(244, 114, 182, .24); box-shadow: 0 12px 28px rgba(190, 24, 93, .10); backdrop-filter: blur(16px); }
 .admin-topbar h1 { color: #9d174d; font-size: 20px; }
 .admin-userbar { display: flex; gap: 10px; align-items: center; color: #9d174d; font-size: 13px; font-weight: 800; }
-.admin-main { display: grid; grid-template-columns: 236px minmax(0, 1fr); width: 100%; padding: 0; }
-.admin-sidebar { padding: 18px 14px; background: rgba(255, 255, 255, .42); border-right: 1px solid rgba(244, 114, 182, .22); }
-.admin-sidebar a { display: flex; align-items: center; min-height: 42px; padding: 0 13px; margin-bottom: 8px; border-radius: 7px; color: #9d174d; text-decoration: none; font-weight: 800; border: 1px solid transparent; }
+.admin-main { display: grid; grid-template-columns: 184px minmax(0, 1fr); width: 100%; padding: 0; }
+.admin-sidebar { padding: 18px 10px; background: rgba(255, 255, 255, .42); border-right: 1px solid rgba(244, 114, 182, .22); }
+.admin-sidebar a { display: flex; align-items: center; min-height: 40px; padding: 0 10px; margin-bottom: 8px; border-radius: 7px; color: #9d174d; text-decoration: none; font-weight: 800; border: 1px solid transparent; font-size: 13px; }
 .admin-sidebar a.active, .admin-sidebar a:hover { background: rgba(252, 231, 243, .72); border-color: rgba(236, 72, 153, .22); }
-.admin-content { min-width: 0; padding: 24px; }
+.admin-content { min-width: 0; overflow: hidden; padding: 24px; }
 .admin-panel { background: rgba(255,255,255,.62); border: 1px solid rgba(244,114,182,.22); box-shadow: 0 18px 42px rgba(190,24,93,.10); }
 .admin-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .admin-card { min-height: 112px; padding: 15px; border-radius: 8px; background: rgba(255,255,255,.58); border: 1px solid rgba(244,114,182,.20); color: #831843; }
 .admin-card span { color: #9f5676; font-size: 13px; }
 .admin-card strong { display: block; margin-top: 8px; font-size: 27px; color: #831843; }
 .admin-card select { margin-top: 9px; }
-.admin-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; }
+.admin-grid { display: grid; grid-template-columns: minmax(220px, .62fr) minmax(0, 1.38fr); gap: 16px; }
+.admin-page .table-wrap { max-width: 100%; }
+.admin-page table { table-layout: auto; }
 .filter-form { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)) auto; gap: 10px; align-items: end; margin-bottom: 14px; }
 .small-button { min-height: 34px; padding: 0 12px; font-size: 12px; }
 .danger-button { background: linear-gradient(135deg, #e11d48, #fb7185); }
